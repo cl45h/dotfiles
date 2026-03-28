@@ -3,5 +3,5 @@ Advertencia: Esta es mi configuración privada en Slackware. Se recomienda utili
 
 dwm + st + dwmblocks + picom
 
+<img width="1919" height="1078" alt="imagen" src="https://github.com/user-attachments/assets/456fe771-c586-445d-b756-57799cfaf523" />
 
-<img width="1280" height="719" alt="imagen" src="https://github.com/user-attachments/assets/8c3d46f0-bdcb-41a1-b41f-b30e8dcc4345" />
