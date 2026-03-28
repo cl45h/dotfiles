@@ -1,0 +1,42 @@
+#!/bin/sh
+set -eu
+
+monitor1="DP-0"
+monitor2="DP-2"
+
+wall1="$(find "$HOME/pix/wall" -type f \( -iname "*.jpg" -o -iname "*.png" \) | shuf -n 1)"
+wall2="$(find "$HOME/pix/wall" -type f \( -iname "*.jpg" -o -iname "*.png" \) | shuf -n 1)"
+
+# Wallpapers
+xwallpaper --output "$monitor1" --zoom "$wall1"
+xwallpaper --output "$monitor2" --zoom "$wall2"
+
+# Paleta: usá el wallpaper principal (wall1)
+wal -n -i "$wall1"
+
+# Cargar Xresources de wal (wal generalmente lo hace, pero lo dejamos explícito)
+xrdb -merge "$HOME/.cache/wal/colors.Xresources"
+
+# Evitar "unbound variable" con set -u cuando colors.sh usa FZF_DEFAULT_OPTS / LS_COLORS
+: "${FZF_DEFAULT_OPTS:=}"
+: "${LS_COLORS:=}"
+
+# Cargar variables shell de wal
+. "$HOME/.cache/wal/colors.sh"
+
+# Mapear wal -> dwm.*
+cat > "$HOME/.cache/wal/dwm.Xresources" <<EOF
+dwm.normbgcolor:     $background
+dwm.normfgcolor:     $foreground
+dwm.normbordercolor: $color8
+dwm.selbgcolor:      $color1
+dwm.selfgcolor:      $foreground
+dwm.selbordercolor:  $color1
+EOF
+
+xrdb -merge "$HOME/.cache/wal/dwm.Xresources"
+
+# Opcional: si tenés un keybind Mod+F5 para reload_xresources, apretalo vos.
+# Alternativa: si implementaste reload por signal/IPC, llamalo acá.
+# pkill -USR1 dwm   # solo si vos implementaste esto
+xdotool key super+F5
