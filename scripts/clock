@@ -1,0 +1,11 @@
+#!/bin/sh
+. "$HOME/.cache/wal/colors.sh"
+
+case $BLOCK_BUTTON in
+    1) setsid -f "$HOME/.local/bin/calendar-popup" ;;
+    2) setsid -f "$TERMINAL" -e calcurse ;;
+    3) notify-send "Reloj" "Click izquierdo: calendario\nClick medio: calcurse" ;;
+    6) "$TERMINAL" -e "$EDITOR" "$0" ;;
+esac
+
+printf " ^c${color4}^$(date '+%a %d %b') ^c${color7}^ $(date '+%H:%M')^d^"

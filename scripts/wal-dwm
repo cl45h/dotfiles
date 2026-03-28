@@ -1,0 +1,19 @@
+#!/bin/sh
+# aplica wal y actualiza recursos de dwm
+
+wal -i "$1" || exit 1
+
+# carga variables de wal
+. "$HOME/.cache/wal/colors.sh" || exit 1
+
+cat > "$HOME/.cache/wal/dwm.Xresources" <<EOF
+dwm.normbgcolor:     $background
+dwm.normfgcolor:     $foreground
+dwm.normbordercolor: $color8
+dwm.selbgcolor:      $color1
+dwm.selfgcolor:      $foreground
+dwm.selbordercolor:  $color1
+EOF
+
+xrdb -merge "$HOME/.cache/wal/colors.Xresources"
+xrdb -merge "$HOME/.cache/wal/dwm.Xresources"

@@ -1,0 +1,10 @@
+*.o
+*.orig
+*.rej
+*.bkp
+*.bkp*
+build.log
+error.txt
+dwm/dwm
+dwmblocks/dwmblocks
+st/st

@@ -1,0 +1,16 @@
+#!/bin/sh
+. "$HOME/.cache/wal/colors.sh"
+
+ICON_ON=''
+ICON_MUTED=''
+
+curStatus=$(pactl get-sink-mute @DEFAULT_SINK@)
+volume=$(pactl get-sink-volume @DEFAULT_SINK@ | sed -e 's,.* \([0-9][0-9]*\)%.*,\1,' | head -n 1)
+
+if [ "${curStatus}" = 'Mute: yes' ]; then
+    printf "${ICON_MUTED}^c${color8}^  ${volume}%%^d^"
+elif [ "$volume" -ge 80 ]; then
+    printf "${ICON_ON}^c${color9}^  ${volume}%%^d^"
+else
+    printf "${ICON_ON}^c${color6}^  ${volume}%%^d^"
+fi
