@@ -1,12 +1,20 @@
 #!/bin/sh
+WALL_DIR="$HOME/pix/wall"
+
+wall=$(nsxiv -t -b -o "$WALL_DIR" 2>/dev/null | head -n 1)
+[ -z "$wall" ] && exit 0
+
+xwallpaper --output "DP-0" --zoom "$wall"
 
 wal -c
-wal -n -s -t -e -i "$1" || exit 1
+wal -n -s -t -e -i "$wall"
+
+xrdb -merge "$HOME/.cache/wal/colors.Xresources"
 
 : "${FZF_DEFAULT_OPTS:=}"
 : "${LS_COLORS:=}"
 
-. "$HOME/.cache/wal/colors.sh" || exit 1
+. "$HOME/.cache/wal/colors.sh"
 
 cat > "$HOME/.cache/wal/dwm.Xresources" <<EOF
 dwm.normbgcolor:          $background
@@ -41,7 +49,6 @@ dwm.urgbgcolor:           $background
 dwm.urgfgcolor:           $color3
 EOF
 
-xrdb -merge "$HOME/.cache/wal/colors.Xresources"
 xrdb -merge "$HOME/.cache/wal/dwm.Xresources"
 
 xdotool key super+F5

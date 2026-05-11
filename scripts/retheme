@@ -7,36 +7,51 @@ monitor2="DP-2"
 wall1="$(find "$HOME/pix/wall" -type f \( -iname "*.jpg" -o -iname "*.png" \) | shuf -n 1)"
 wall2="$(find "$HOME/pix/wall" -type f \( -iname "*.jpg" -o -iname "*.png" \) | shuf -n 1)"
 
-# Wallpapers
-xwallpaper --output "$monitor1" --zoom "$wall1"
-xwallpaper --output "$monitor2" --zoom "$wall2"
+xwallpaper --output "$monitor1" --zoom "$wall1" --output "$monitor2" --zoom "$wall2"
 
-# Paleta: usá el wallpaper principal (wall1)
-wal -n -i "$wall1"
+wal -c
+wal -n -s -t -e -i "$wall1"
 
-# Cargar Xresources de wal (wal generalmente lo hace, pero lo dejamos explícito)
 xrdb -merge "$HOME/.cache/wal/colors.Xresources"
 
-# Evitar "unbound variable" con set -u cuando colors.sh usa FZF_DEFAULT_OPTS / LS_COLORS
 : "${FZF_DEFAULT_OPTS:=}"
 : "${LS_COLORS:=}"
 
-# Cargar variables shell de wal
 . "$HOME/.cache/wal/colors.sh"
 
-# Mapear wal -> dwm.*
 cat > "$HOME/.cache/wal/dwm.Xresources" <<EOF
-dwm.normbgcolor:     $background
-dwm.normfgcolor:     $foreground
-dwm.normbordercolor: $color8
-dwm.selbgcolor:      $color1
-dwm.selfgcolor:      $foreground
-dwm.selbordercolor:  $color1
+dwm.normbgcolor:          $background
+dwm.normfgcolor:          $foreground
+dwm.normbordercolor:      $color8
+dwm.normfloatcolor:       $color8
+dwm.selbgcolor:           $color1
+dwm.selfgcolor:           $foreground
+dwm.selbordercolor:       $color1
+dwm.selfloatcolor:        $color1
+dwm.titlenormbgcolor:     $background
+dwm.titlenormfgcolor:     $foreground
+dwm.titlenormbordercolor: $color8
+dwm.titlenormfloatcolor:  $color8
+dwm.titleselbgcolor:      $color1
+dwm.titleselfgcolor:      $foreground
+dwm.titleselbordercolor:  $color1
+dwm.titleselfloatcolor:   $color1
+dwm.tagsnormbgcolor:      $background
+dwm.tagsnormfgcolor:      $foreground
+dwm.tagsnormbordercolor:  $color8
+dwm.tagsnormfloatcolor:   $color8
+dwm.tagsselbgcolor:       $color1
+dwm.tagsselfgcolor:       $foreground
+dwm.tagsselbordercolor:   $color1
+dwm.tagsselfloatcolor:    $color1
+dwm.hidnormbgcolor:       $background
+dwm.hidnormfgcolor:       $color8
+dwm.hidselbgcolor:        $background
+dwm.hidselfgcolor:        $color1
+dwm.urgbgcolor:           $background
+dwm.urgfgcolor:           $color3
 EOF
 
 xrdb -merge "$HOME/.cache/wal/dwm.Xresources"
 
-# Opcional: si tenés un keybind Mod+F5 para reload_xresources, apretalo vos.
-# Alternativa: si implementaste reload por signal/IPC, llamalo acá.
-# pkill -USR1 dwm   # solo si vos implementaste esto
 xdotool key super+F5
