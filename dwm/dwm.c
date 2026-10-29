@@ -1705,6 +1705,8 @@ movestack(const Arg *arg)
 {
 	Client *c = NULL, *p = NULL, *pc = NULL, *i;
 
+	if (!selmon->sel)
+		return; /* tag vacía: sin esto segfault (Super+Shift+j/k) */
 	if (arg->i > 0) {
 		/* find the client after selmon->sel */
 		for (c = selmon->sel->next; c && !ISVISIBLE(c); c = c->next);
