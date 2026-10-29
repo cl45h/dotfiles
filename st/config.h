@@ -223,6 +223,9 @@ ResourcePref resources[] = {
  */
 static MouseShortcut mshortcuts[] = {
 	/* máscara              botón    función         argumento      release */
+	/* Ctrl+rueda: zoom de la fuente (2026-10-29). Antes de las entradas XK_ANY_MOD, que atrapan cualquier modificador */
+	{ ControlMask,          Button4, zoom,           {.f = +1} },
+	{ ControlMask,          Button5, zoom,           {.f = -1} },
 	{ XK_NO_MOD,            Button4, kscrollup,      {.i = 1} },
 	{ XK_NO_MOD,            Button5, kscrolldown,    {.i = 1} },
 	{ XK_ANY_MOD,           Button2, selpaste,       {.i = 0},      1 },
