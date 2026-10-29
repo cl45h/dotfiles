@@ -1,21 +1,16 @@
 #!/bin/sh
-set -eu
-
 monitor1="DP-0"
 monitor2="DP-2"
 
-wall1="$(find "$HOME/pix/wall" -type f \( -iname "*.jpg" -o -iname "*.png" \) | shuf -n 1)"
-wall2="$(find "$HOME/pix/wall" -type f \( -iname "*.jpg" -o -iname "*.png" \) | shuf -n 1)"
+wall1=$(find ~/pix/wall/ -type f \( -iname "*.jpg" -o -iname "*.png" \) | shuf -n 1)
+wall2=$(find ~/pix/wall/ -type f \( -iname "*.jpg" -o -iname "*.png" \) | shuf -n 1)
 
 xwallpaper --output "$monitor1" --zoom "$wall1" --output "$monitor2" --zoom "$wall2"
 
 wal -c
 wal -n -s -t -e -i "$wall1"
 
-xrdb -merge "$HOME/.cache/wal/colors.Xresources"
-
-: "${FZF_DEFAULT_OPTS:=}"
-: "${LS_COLORS:=}"
+xrdb -merge ~/.cache/wal/colors.Xresources
 
 . "$HOME/.cache/wal/colors.sh"
 
@@ -55,3 +50,6 @@ EOF
 xrdb -merge "$HOME/.cache/wal/dwm.Xresources"
 
 xdotool key super+F5
+
+# recargar colores de dunst (plantilla wal)
+dunstctl reload >/dev/null 2>&1

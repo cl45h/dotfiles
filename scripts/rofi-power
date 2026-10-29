@@ -1,0 +1,14 @@
+#!/bin/sh
+# Menú de apagado (rofi): bloquear (asciilock), cerrar sesión, suspender, reiniciar, apagar.
+# Suspender/reiniciar/apagar van por elogind (loginctl), que no pide contraseña para la sesión activa.
+# Cerrar sesión, reiniciar y apagar piden confirmación.
+th='window { width: 300px; } listview { lines: 5; columns: 1; } inputbar { enabled: false; }'
+sel=$(printf '%s\n' "  Bloquear" "  Cerrar sesión" "  Suspender" "  Reiniciar" "  Apagar" | rofi -dmenu -i -p "" -theme-str "$th")
+confirm() { [ "$(printf 'No\nSí' | rofi -dmenu -i -p "¿$1?" -theme-str 'window { width: 240px; } listview { lines: 2; }')" = "Sí" ]; }
+case "$sel" in
+    *Bloquear) exec lock ;;
+    *"Cerrar sesión") confirm "Cerrar sesión" && kill -TERM "$(pgrep -x dwm | head -1)" ;;
+    *Suspender) loginctl suspend ;;
+    *Reiniciar) confirm "Reiniciar" && loginctl reboot ;;
+    *Apagar) confirm "Apagar" && loginctl poweroff ;;
+esac

@@ -1,0 +1,4 @@
+#!/bin/sh
+# Lanzador (Super+Espacio): reemplaza a ~/scripts/dmenu.sh (dmenu_run) por rofi con el tema 43pr.
+# combi = apps con icono (drun) + binarios del PATH (run), así no se pierde nada de dmenu_run.
+exec rofi -show combi -modes "combi,drun,run" -combi-modes "drun,run" -show-icons -icon-theme breeze -display-combi "" -p ""

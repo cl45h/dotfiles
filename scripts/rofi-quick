@@ -1,0 +1,21 @@
+#!/bin/sh
+# Acciones rápidas (rofi): lo que en 43PR son los "quick actions" de Quickshell, en un menú.
+if [ "$(dunstctl is-paused 2>/dev/null)" = "true" ]; then dnd="  No molestar: activado"; else dnd="  No molestar: desactivado"; fi
+if pgrep -x picom >/dev/null; then pic="  Compositor (picom): encendido"; else pic="  Compositor (picom): apagado"; fi
+sel=$(printf '%s\n' "  Captura (selección)" "  Captura de pantalla completa" "  Fondo de pantalla…" "  Tema de colores…" "  Nuevo look (fondo y colores al azar)" "  Zoom" "$dnd" "  Historial de notificaciones" "  Portapapeles…" "  Mezclador de audio" "$pic" "  Bloquear" "  Apagar…" \
+    | rofi -dmenu -i -p "acciones" -theme-str 'window { width: 460px; } listview { lines: 13; }')
+case "$sel" in
+    *"Captura (selección)") flameshot gui ;;
+    *"Captura de pantalla completa") mkdir -p ~/pix/screenshots && flameshot full -p ~/pix/screenshots/ ;;
+    *"Fondo de pantalla"*) rofi-wall ;;
+    *"Tema de colores"*) rofi-theme ;;
+    *"Nuevo look"*) newlook ;;
+    *"Zoom") zoom ;;
+    *"No molestar"*) dunstctl set-paused toggle ;;
+    *"Historial"*) dunstctl history-pop ;;
+    *"Portapapeles"*) clip-pick ;;
+    *"Mezclador"*) pavucontrol-dark ;;
+    *"Compositor"*) if pgrep -x picom >/dev/null; then pkill -x picom; else setsid -f picom --config "$HOME/.config/picom/picom.conf" >/dev/null 2>&1; fi ;;
+    *"Bloquear") lock ;;
+    *"Apagar"*) rofi-power ;;
+esac

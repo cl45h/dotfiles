@@ -1,0 +1,13 @@
+/* Generado por wal (plantilla ~/.config/wal/templates/colors-rofi-43pr.rasi) desde {wallpaper} */
+* {{
+    bg:           {background}E6;
+    bg-alt:       {color8}26;
+    bg-selected:  {color8}40;
+    fg:           {foreground};
+    fg-dark:      {color8};
+    fg-muted:     {color8};
+    border-color: {color8}80;
+    accent:       {color6};
+    accent-soft:  {color6}80;
+    urgent:       {color4};
+}}

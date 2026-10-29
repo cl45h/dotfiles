@@ -1,0 +1,10 @@
+@import "~/.config/rofi/master_config.rasi" 
+
+/* ---- Configuration ---- */
+configuration {
+	font: "JetBrains Mono 12";
+}
+
+element-text {
+    font:	"JetBrains Mono 13";
+}

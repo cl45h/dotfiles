@@ -2,10 +2,12 @@
 static const Block blocks[] = {
 
 /*Icono*/	/*Comando*/		/*Intervalo de actualización*/	/*Señal de actualización*/
+  {"",  "/home/r/scripts/tiempo --widget 'Buenos Aires'",  600,  7},
   {"",  "volume",  0,  10},
   {"",  "clock",   1,  1},
   {" ",  "internet", 5, 4},
-  {"",  "cputemp", 5,  4},
+  {"",  "cputemp", 5,  5},
+  {"",  "mousebat", 30,  6},
 };
 
 /* separador entre bloques. NULL ('\0') significa sin separador. */

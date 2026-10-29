@@ -1,0 +1,50 @@
+#!/bin/sh
+# dwmblocks: nivel de bateria del Razer Viper Ultimate (mouse inalambrico) via sysfs.
+# El dato lo expone el driver razermouse (OpenRazer). No depende del daemon.
+# charge_level viene en escala 0-255; charge_status: 1 = cargando, 0 = descargando.
+. "$HOME/.cache/wal/colors.sh"
+
+LOW=15                              # umbral de alerta (%). El mouse trae el suyo en charge_low_threshold (~30%).
+STATE="/tmp/.mousebat_state"       # para no spamear la notificacion en cada refresh
+
+# Emoji por bytes UTF-8 (robusto, no depende del editor): 🔋 = U+1F50B, ⚡ = U+26A1.
+BAT=$(printf '\360\237\224\213')   # 🔋 bateria
+BOLT=$(printf '\342\232\241')      # ⚡ cargando
+
+# Tomar el primer charge_level que exista (glob del device HID).
+level_file=$(ls /sys/bus/hid/drivers/razermouse/*/charge_level 2>/dev/null | head -n1)
+[ -z "$level_file" ] && { rm -f "$STATE"; exit 0; }   # driver no cargado / mouse ausente -> block vacio
+
+raw=$(cat "$level_file" 2>/dev/null)
+case "$raw" in ''|*[!0-9]*) exit 0 ;; esac            # dato no numerico -> no mostrar
+# El mouse dormido/apagado suele reportar 0 -> lo tratamos como "sin dato".
+[ "$raw" -le 0 ] && { rm -f "$STATE"; exit 0; }
+
+pct=$(awk -v r="$raw" 'BEGIN{printf "%.0f", r/255*100}')
+
+# Estado de carga (sibling charge_status del mismo device).
+status_file=$(dirname "$level_file")/charge_status
+charging=0
+[ -r "$status_file" ] && [ "$(cat "$status_file" 2>/dev/null)" = "1" ] && charging=1
+
+# Icono + color, siguiendo la semantica de tus otros blocks (color9 = alerta, color5 = normal).
+prefix=""
+[ "$charging" -eq 1 ] && prefix="$BOLT"
+if [ "$charging" -eq 0 ] && [ "$pct" -le "$LOW" ]; then
+    col="$color9"
+else
+    col="$color5"
+fi
+
+printf "^c%s^%s%s %s%%^d^" "$col" "$prefix" "$BAT" "$pct"
+
+# --- Alerta de bateria baja: una sola vez por cruce de umbral (no spamea) ---
+last=$(cat "$STATE" 2>/dev/null)
+if [ "$charging" -eq 0 ] && [ "$pct" -le "$LOW" ]; then
+    if [ "$last" != "low" ]; then
+        notify-send -u critical "$BAT Viper Ultimate" "Bateria en ${pct}% -- conecta el cable o el dock" 2>/dev/null
+        echo low > "$STATE"
+    fi
+else
+    [ "$last" = "low" ] && rm -f "$STATE"        # se recupero / esta cargando -> rearmar alerta
+fi

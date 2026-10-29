@@ -1,0 +1,11 @@
+/* volume-osd: generado por wal desde ~/.config/wal/templates/colors-osd.css */
+window {{ background-color: transparent; }}
+.osd {{ background-color: alpha({background}, 0.92); border: 1px solid alpha({color8}, 0.6); border-radius: 20px; padding: 10px 18px; }}
+.osd label {{ color: {foreground}; font-family: "JetBrains Mono"; font-size: 11pt; }}
+.osd image {{ color: {foreground}; }}
+.osd.muted image, .osd.muted label {{ color: {color8}; }}
+levelbar trough {{ background-color: alpha({color8}, 0.35); border: none; border-radius: 3px; min-height: 6px; }}
+levelbar block {{ border-radius: 3px; min-height: 6px; border: none; }}
+levelbar block.filled {{ background-color: {color6}; }}
+.osd.muted levelbar block.filled {{ background-color: {color8}; }}
+levelbar block.empty {{ background-color: transparent; }}

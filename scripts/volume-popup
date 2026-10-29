@@ -1,0 +1,91 @@
+#!/bin/sh
+# Popup de volumen para el bloque de dwmblocks (click izquierdo sobre el bloque).
+# - Si ya está abierto, lo cierra (toggle).
+# - Una fila: slider con +/- (pasos de 5). Mute y mixer van por el clic del medio y el derecho del bloque.
+# - Se cierra solo cuando el puntero se aleja de la ventana, o con Escape.
+
+TITLE="volume-popup"
+W=260
+MARGIN=60      # px alrededor del popup donde el puntero puede estar sin cerrarlo
+GRACE=4        # polls de 0.25 s fuera del popup antes de cerrarlo (1 s)
+NEVER_IN=20    # si el puntero nunca entró, cerrar igual a los 5 s
+
+# Toggle: ya hay uno abierto -> cerrarlo
+if pgrep -f "^yad .*--title=$TITLE" >/dev/null 2>&1; then
+    pkill -f "^yad .*--title=$TITLE"
+    exit 0
+fi
+
+exec >/dev/null 2>&1
+
+refresh() { pkill -RTMIN+10 -x dwmblocks; }
+
+cur=$(pactl get-sink-volume @DEFAULT_SINK@ | sed -e 's,.* \([0-9][0-9]*\)%.*,\1,' | head -n 1)
+cur=${cur:-0}
+max=100
+[ "$cur" -gt 100 ] && max=$cur
+
+# Monitor bajo el puntero (xrandr) para no dejar el popup cortado en el borde
+eval "$(xdotool getmouselocation --shell 2>/dev/null)"
+MX=${X:-0}
+MON_X=0; MON_W=1920
+for g in $(xrandr --query 2>/dev/null | awk '/ connected/ {for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+x[0-9]+\+[0-9]+\+[0-9]+$/) print $i}'); do
+    w=${g%%x*}; rest=${g#*+}; x=${rest%%+*}
+    if [ "$MX" -ge "$x" ] && [ "$MX" -lt $((x + w)) ]; then
+        MON_X=$x; MON_W=$w; break
+    fi
+done
+PX=$((MX - W / 2))
+[ "$PX" -lt "$MON_X" ] && PX=$MON_X
+[ "$PX" -gt $((MON_X + MON_W - W - 2)) ] && PX=$((MON_X + MON_W - W - 2))
+PY=26
+
+# Una sola fila: [-] slider [+]. El porcentaje se ve en la barra (se refresca mientras arrastrás).
+# Mute y mixer quedan en el clic del medio y el derecho del bloque.
+yad --scale --title="$TITLE" \
+    --value="$cur" --min-value=0 --max-value="$max" --step=5 --page=10 \
+    --print-partial --inc-buttons --hide-value \
+    --undecorated --fixed --skip-taskbar --on-top --borders=0 --width="$W" --posx="$PX" --posy="$PY" \
+    --css="$HOME/.config/yad/volume.css" \
+    --no-buttons \
+    2>/dev/null | while read -r v; do
+        v=${v%%.*}
+        [ -n "$v" ] && pactl set-sink-volume @DEFAULT_SINK@ "${v}%" && refresh
+    done &
+
+# Esperar a que dwm la mapee (hasta 2 s). yad ya pide la posición con --posx/--posy;
+# si quedó en otro lado, moverla con coordenadas relativas al monitor (dwm suma m->mx
+# a lo que llega por ConfigureRequest).
+WID=""; i=0
+while [ -z "$WID" ] && [ "$i" -lt 20 ]; do
+    sleep 0.1
+    WID=$(xdotool search --onlyvisible --name "^$TITLE$" 2>/dev/null | tail -1)
+    i=$((i + 1))
+done
+[ -z "$WID" ] && exit 1
+eval "$(xdotool getwindowgeometry --shell "$WID" 2>/dev/null)"
+if [ "${X:-0}" -ne "$PX" ] || [ "${Y:-0}" -ne "$PY" ]; then
+    xdotool windowmove "$WID" $((PX - MON_X)) "$PY"
+fi
+
+# Cerrar cuando el puntero se aleja del popup
+out=0; polls=0; entered=0
+while xdotool getwindowname "$WID" >/dev/null 2>&1; do
+    eval "$(xdotool getwindowgeometry --shell "$WID" 2>/dev/null)"
+    WX=${X:-0}; WY=${Y:-0}; WW=${WIDTH:-0}; WH=${HEIGHT:-0}
+    eval "$(xdotool getmouselocation --shell 2>/dev/null)"
+    if [ "${X:-0}" -ge $((WX - MARGIN)) ] && [ "${X:-0}" -le $((WX + WW + MARGIN)) ] \
+       && [ "${Y:-0}" -le $((WY + WH + MARGIN)) ]; then
+        entered=1; out=0
+    else
+        out=$((out + 1))
+    fi
+    polls=$((polls + 1))
+    if { [ "$entered" -eq 1 ] && [ "$out" -ge "$GRACE" ]; } \
+       || { [ "$entered" -eq 0 ] && [ "$polls" -ge "$NEVER_IN" ]; }; then
+        pid=$(xdotool getwindowpid "$WID" 2>/dev/null)
+        [ -n "$pid" ] && kill "$pid" 2>/dev/null || pkill -f "^yad .*--title=$TITLE"
+        break
+    fi
+    sleep 0.25
+done

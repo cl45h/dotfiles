@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""clip-daemon: historial del portapapeles (solo texto) para clip-pick.
+
+Escucha el CLIPBOARD (señal owner-change de GTK) y guarda las últimas 200 entradas distintas
+en ~/.cache/clip-history.json (la más nueva primera, permisos 600). Arranca desde .xinitrc.
+Una sola instancia (lock en ~/.cache/clip-daemon.lock). No filtra contraseñas: si copiás una,
+queda en el historial hasta que la desplacen 200 copias (o borrás el archivo).
+"""
+import fcntl
+import json
+import os
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, Gtk  # noqa: E402
+
+HIST = os.path.expanduser("~/.cache/clip-history.json")
+LOCK = os.path.expanduser("~/.cache/clip-daemon.lock")
+MAX = 200
+
+
+def load():
+    try:
+        with open(HIST) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return []
+
+
+def on_change(clip, _event):
+    text = clip.wait_for_text()
+    if not text or not text.strip() or len(text) > 100000:
+        return
+    hist = load()
+    if hist and hist[0] == text:
+        return
+    hist = [text] + [t for t in hist if t != text]
+    tmp = HIST + ".tmp"
+    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+        json.dump(hist[:MAX], f)
+    os.replace(tmp, HIST)
+
+
+def main():
+    lock = open(LOCK, "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return 0
+    clip = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+    clip.connect("owner-change", on_change)
+    Gtk.main()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,78 @@
+/* Look de 43PR/dotfiles (Hyprland) adaptado: 420 px, radio 10, una columna, iconos 28 px.
+ * Colores desde wal: ~/.cache/wal/colors-rofi-43pr.rasi (se regeneran con walc/newlook). */
+@import "~/.cache/wal/colors-rofi-43pr.rasi"
+
+* {
+    font: "JetBrains Mono 12";
+    background-color: transparent;
+    text-color: @fg;
+}
+
+window {
+    location: center;
+    anchor: center;
+    width: 420px;
+    border: 1px;
+    border-color: @border-color;
+    border-radius: 10px;
+    background-color: @bg;
+    padding: 10px;
+}
+
+mainbox { spacing: 12px; }
+
+inputbar {
+    children: [prompt, entry];
+    spacing: 12px;
+    background-color: @bg-alt;
+    border-radius: 10px;
+    padding: 5px 15px;
+}
+prompt { text-color: @accent; }
+textbox-prompt-colon { expand: false; str: ""; }
+entry {
+    placeholder: "";
+    placeholder-color: @fg-muted;
+    text-color: @fg;
+    cursor: text;
+}
+
+listview {
+    columns: 1;
+    lines: 8;
+    spacing: 6px;
+    padding: 4px 0;
+    scrollbar: false;
+    fixed-height: false;
+}
+
+element {
+    padding: 10px 14px;
+    spacing: 14px;
+    border-radius: 10px;
+}
+element normal.normal, element alternate.normal { background-color: transparent; text-color: @fg; }
+element normal.active,  element alternate.active { background-color: transparent; text-color: @accent; }
+element normal.urgent,  element alternate.urgent { background-color: transparent; text-color: @urgent; }
+element selected.normal, element selected.active {
+    background-color: @bg-selected;
+    text-color: @fg;
+    border: 1px;
+    border-color: @border-color;
+}
+element selected.urgent { background-color: @urgent; text-color: @bg; }
+element-icon { size: 28px; background-color: transparent; }
+element-text { background-color: transparent; text-color: inherit; vertical-align: 0.5; }
+
+mode-switcher { spacing: 6px; }
+button {
+    padding: 6px;
+    border-radius: 10px;
+    background-color: @bg-alt;
+    text-color: @fg-muted;
+    horizontal-align: 0.5;
+}
+button selected { background-color: @bg-selected; text-color: @accent; }
+
+message { background-color: @bg-alt; border-radius: 10px; padding: 6px; }
+textbox { text-color: @fg; }

@@ -1,0 +1,1820 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+tiempo: el clima en la terminal, pero zarpado.
+
+Interfaz curses con arte ASCII animado, temperatura en bloques, próximas horas,
+pronóstico a 7 días, lluvia en cuartos de hora, índice de asado y tender,
+sol y luna, calidad del aire y consejos con onda.
+Datos: Open-Meteo (gratis, sin API key). Sin dependencias: solo python3.
+
+Uso:
+  tiempo [ciudad]          abre la interfaz (sin ciudad: la última usada)
+  tiempo --bar [ciudad]    una sola línea, para la barra (dwm, tmux, polybar)
+  tiempo --widget          lo mínimo para dwmblocks: icono, temperatura y aviso de lluvia
+                           (click en el bloque: izquierdo abre la TUI, medio refresca,
+                            derecho manda una notificación con el pronóstico)
+  tiempo --no-anim         sin animaciones
+  tiempo -f                en Fahrenheit
+  tiempo lat,lon           coordenadas directas (ej: tiempo -34.6,-58.4)
+
+Teclas dentro de la interfaz:
+  q            salir                 r        refrescar datos
+  c  /         cambiar ciudad        u        °C / °F
+  a            animación on/off      ?        ayuda
+  ← → h l      desplazar horas       Tab      día siguiente (Shift+Tab anterior)
+  1-7          ir a ese día          t        volver a ahora
+  ↑ ↓ j k      scroll                PgUp/PgDn/espacio  scroll por página
+"""
+
+import argparse
+import curses
+import json
+import locale
+import math
+import os
+import queue
+import random
+import re
+import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timedelta, timezone
+
+try:
+    from zoneinfo import ZoneInfo
+except Exception:  # pragma: no cover
+    ZoneInfo = None
+
+VERSION = "2.0"
+CACHE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "tiempo")
+CACHE_TTL = 600  # segundos que vale la caché antes de volver a pedir
+DEFAULT_CITY = os.environ.get("TIEMPO_CIUDAD", "Buenos Aires")
+PREF_CC = os.environ.get("TIEMPO_PAIS", "AR").upper()  # país que gana en empates de búsqueda
+PREF_BOOST = 10  # cuánto pesa más una ciudad del país preferido al ordenar
+UNKNOWN_POP = 3000  # población supuesta para lugares del país preferido sin dato
+GEO_URL = "https://geocoding-api.open-meteo.com/v1/search"
+FC_URL = "https://api.open-meteo.com/v1/forecast"
+AQ_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
+UA = "tiempo-tui/" + VERSION
+FRAME_MS = 120  # ~8 fps para la animación
+PAD_H = 90
+
+CURRENT_VARS = ("temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,"
+                "weather_code,cloud_cover,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m")
+HOURLY_VARS = ("temperature_2m,apparent_temperature,precipitation_probability,precipitation,weather_code,"
+               "uv_index,is_day,wind_speed_10m,pressure_msl,relative_humidity_2m")
+DAILY_VARS = ("weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset,"
+              "precipitation_probability_max,precipitation_sum,uv_index_max,wind_speed_10m_max")
+
+DAYS = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"]
+MONTHS = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
+COMPASS = ["N", "NE", "E", "SE", "S", "SO", "O", "NO"]
+ARROWS = ["↓", "↙", "←", "↖", "↑", "↗", "→", "↘"]  # hacia dónde sopla (viene del N -> va al S)
+SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+# código WMO -> (descripción, tipo de arte)
+WMO = {
+    0: ("Despejado", "sun"),
+    1: ("Mayormente despejado", "sun"),
+    2: ("Parcialmente nublado", "suncloud"),
+    3: ("Nublado", "cloud"),
+    45: ("Niebla", "fog"), 48: ("Niebla con escarcha", "fog"),
+    51: ("Llovizna leve", "drizzle"), 53: ("Llovizna", "drizzle"), 55: ("Llovizna intensa", "drizzle"),
+    56: ("Llovizna helada", "drizzle"), 57: ("Llovizna helada intensa", "drizzle"),
+    61: ("Lluvia leve", "rain"), 63: ("Lluvia", "rain"), 65: ("Lluvia fuerte", "rain"),
+    66: ("Lluvia helada", "rain"), 67: ("Lluvia helada fuerte", "rain"),
+    71: ("Nieve leve", "snow"), 73: ("Nieve", "snow"), 75: ("Nieve intensa", "snow"),
+    77: ("Granizo fino", "snow"),
+    80: ("Chaparrones leves", "showers"), 81: ("Chaparrones", "showers"), 82: ("Chaparrones fuertes", "showers"),
+    85: ("Chaparrones de nieve", "snow"), 86: ("Nevadas fuertes", "snow"),
+    95: ("Tormenta", "storm"), 96: ("Tormenta con granizo", "storm"), 99: ("Tormenta con granizo fuerte", "storm"),
+}
+
+ICON = {"sun": "☀", "night": "☾", "suncloud": "☁", "nightcloud": "☁", "cloud": "☁", "fog": "≡",
+        "drizzle": "☂", "rain": "☂", "showers": "☂", "snow": "❄", "storm": "ϟ"}
+ICON_COLOR = {"sun": "sun", "night": "moon", "suncloud": "sun", "nightcloud": "cloud", "cloud": "cloud",
+              "fog": "fog", "drizzle": "rain", "rain": "rain", "showers": "rain", "snow": "snow", "storm": "bolt"}
+
+PAL = {
+    "sun": (255, 200, 0), "moon": (230, 230, 255), "star": (255, 230, 120),
+    "cloud": (215, 215, 215), "cloud2": (160, 160, 160), "fog": (170, 170, 170),
+    "rain": (80, 160, 255), "snow": (235, 245, 255), "bolt": (255, 235, 80),
+    "dim": (110, 110, 110), "text": (225, 225, 225), "accent": (120, 200, 255), "title": (255, 255, 255),
+    "ok": (90, 230, 110), "warn": (240, 220, 60), "bad": (255, 120, 60), "crit": (255, 60, 60),
+    "violet": (190, 120, 255),
+}
+
+# arte: lista de filas, cada fila una lista de (texto, color)
+ART = {
+    "sun": [
+        [("    \\   /    ", "sun")],
+        [("     .-.     ", "sun")],
+        [("  - (   ) -  ", "sun")],
+        [("     `-'     ", "sun")],
+        [("    /   \\    ", "sun")],
+    ],
+    "sun_b": [
+        [("      |      ", "sun")],
+        [("  \\  .-.  /  ", "sun")],
+        [("    (   )    ", "sun")],
+        [("  /  `-'  \\  ", "sun")],
+        [("      |      ", "sun")],
+    ],
+    "night": [
+        [("   *   ", "star"), (".--.  ", "moon")],
+        [("  .   ", "star"), ("(    `.", "moon")],
+        [("      ", "star"), ("|     |", "moon")],
+        [("  *   ", "star"), ("(    .'", "moon")],
+        [("       ", "star"), ("`--'  ", "moon")],
+    ],
+    "suncloud": [
+        [("   \\  /      ", "sun")],
+        [(" _ /\"\"", "sun"), (".-.    ", "cloud")],
+        [("   \\_", "sun"), ("(   ).  ", "cloud")],
+        [("   /", "sun"), ("(___(__) ", "cloud")],
+        [("             ", "cloud")],
+    ],
+    "nightcloud": [
+        [("  *  ", "star"), (".--.    ", "moon")],
+        [("    ", "star"), ("(    `.  ", "moon")],
+        [("    ", "star"), ("|  ", "moon"), (".-.-. ", "cloud")],
+        [("   *", "star"), ("(_", "moon"), ("(    ).", "cloud")],
+        [("     ", "star"), ("(___(__)", "cloud")],
+    ],
+    "cloud": [
+        [("             ", "cloud")],
+        [("     .--.    ", "cloud")],
+        [("  .-(    ).  ", "cloud")],
+        [(" (___.__)__) ", "cloud")],
+        [("             ", "cloud")],
+    ],
+    "fog": [
+        [("             ", "fog")],
+        [(" _ - _ - _ - ", "fog")],
+        [("  _ - _ - _  ", "fog")],
+        [(" _ - _ - _ - ", "fog")],
+        [("             ", "fog")],
+    ],
+    "rain": [
+        [("     .-.     ", "cloud")],
+        [("    (   ).   ", "cloud")],
+        [("   (___(__)  ", "cloud")],
+        [("   / / / /   ", "rain")],
+        [("  / / / /    ", "rain")],
+    ],
+    "drizzle": [
+        [("     .-.     ", "cloud")],
+        [("    (   ).   ", "cloud")],
+        [("   (___(__)  ", "cloud")],
+        [("   ' ' ' '   ", "rain")],
+        [("  ' ' ' '    ", "rain")],
+    ],
+    "showers": [
+        [(" _`/\"\"", "sun"), (".-.    ", "cloud")],
+        [("  ,\\_", "sun"), ("(   ).  ", "cloud")],
+        [("   /", "sun"), ("(___(__) ", "cloud")],
+        [("    / / / /  ", "rain")],
+        [("   / / / /   ", "rain")],
+    ],
+    "snow": [
+        [("     .-.     ", "cloud")],
+        [("    (   ).   ", "cloud")],
+        [("   (___(__)  ", "cloud")],
+        [("   *  *  *   ", "snow")],
+        [("  *  *  *    ", "snow")],
+    ],
+    "storm": [
+        [("     .-.     ", "cloud")],
+        [("    (   ).   ", "cloud")],
+        [("   (___(__)  ", "cloud")],
+        [("   ϟ / ϟ /   ", "bolt")],
+        [("  / ϟ / ϟ    ", "bolt")],
+    ],
+}
+
+# tipo -> (chars de partícula, partículas nuevas por frame)
+PRECIP = {"drizzle": (".'", 0.6), "rain": ("||'", 1.3), "showers": ("||'", 1.6),
+          "storm": ("||", 1.8), "snow": ("**·", 0.8)}
+
+BIG = {
+    "0": [" ▄███▄ ", "██   ██", "██   ██", "██   ██", " ▀███▀ "],
+    "1": ["  ▄██  ", " ▀ ██  ", "   ██  ", "   ██  ", " ▄████▄"],
+    "2": [" ▄███▄ ", "▀▀   ██", "   ▄█▀ ", " ▄█▀   ", "███████"],
+    "3": ["▄████▄ ", "▀▀   ██", "   ███ ", "▄▄   ██", " ▀███▀ "],
+    "4": ["    ██ ", "   ███ ", " ▄█ ██ ", "███████", "     ██"],
+    "5": ["███████", "██     ", "█████▄ ", "     ██", "▀████▀ "],
+    "6": [" ▄███▄ ", "██     ", "█████▄ ", "██   ██", " ▀███▀ "],
+    "7": ["███████", "     ██", "    ██ ", "   ██  ", "   ██  "],
+    "8": [" ▄███▄ ", "██   ██", " ▀███▀ ", "██   ██", " ▀███▀ "],
+    "9": [" ▄███▄ ", "██   ██", " ▀█████", "     ██", " ▀███▀ "],
+    "-": ["       ", "       ", " █████ ", "       ", "       "],
+    "°": ["▄▀▀▄ ", "▀▄▄▀ ", "     ", "     ", "     "],
+    "C": [" ▄████ ", "██     ", "██     ", "██     ", " ▀████ "],
+    "F": ["███████", "██     ", "█████  ", "██     ", "██     "],
+}
+
+
+# ---------------------------------------------------------------- utilidades
+
+def wmo(code):
+    return WMO.get(code, ("Desconocido (%s)" % code, "cloud"))
+
+
+def art_kind(kind, is_day):
+    if is_day:
+        return kind
+    return {"sun": "night", "suncloud": "nightcloud", "showers": "rain"}.get(kind, kind)
+
+
+def wrap(text, w):
+    words, lines, cur = text.split(), [], ""
+    for wd in words:
+        if cur and len(cur) + 1 + len(wd) > w:
+            lines.append(cur)
+            cur = wd
+        else:
+            cur = (cur + " " + wd).strip()
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def big_text(s):
+    rows = [""] * 5
+    for ch in s:
+        g = BIG.get(ch)
+        if not g:
+            continue
+        for i in range(5):
+            rows[i] += g[i]
+    return rows
+
+
+def fmt_ago(secs):
+    secs = max(0, int(secs))
+    if secs < 60:
+        return "recién"
+    if secs < 3600:
+        return "hace %dm" % (secs // 60)
+    return "hace %dh%02dm" % (secs // 3600, (secs % 3600) // 60)
+
+
+def fmt_dur(td):
+    s = max(0, int(td.total_seconds()))
+    h, m = s // 3600, (s % 3600) // 60
+    return "%dh%02dm" % (h, m) if h else "%dm" % m
+
+
+def fmt_min(mn):
+    return "%dm" % mn if mn < 60 else "%dh%02dm" % (mn // 60, mn % 60)
+
+
+def compass(deg):
+    return COMPASS[int((deg + 22.5) // 45) % 8]
+
+
+def arrow(deg):
+    return ARROWS[int((deg + 22.5) // 45) % 8]
+
+
+def bar10(pct, fill="█", empty="░"):
+    n = max(0, min(10, int(round((pct or 0) / 10.0))))
+    return fill * n + empty * (10 - n)
+
+
+def uv_level(uv):
+    if uv < 3:
+        return "bajo", "ok"
+    if uv < 6:
+        return "moderado", "warn"
+    if uv < 8:
+        return "alto", "bad"
+    if uv < 11:
+        return "muy alto", "crit"
+    return "extremo", "violet"
+
+
+def aqi_level(a):
+    if a <= 20:
+        return "bueno", "ok"
+    if a <= 40:
+        return "aceptable", "ok"
+    if a <= 60:
+        return "moderado", "warn"
+    if a <= 80:
+        return "malo", "bad"
+    if a <= 100:
+        return "muy malo", "crit"
+    return "extremo", "violet"
+
+
+def moon_info(now_utc):
+    """Fase lunar: (nombre, icono, % iluminada, días a llena, días a nueva)."""
+    ref = datetime(2000, 1, 6, 18, 14, tzinfo=timezone.utc)  # luna nueva de referencia
+    syn = 29.530588853
+    age = ((now_utc - ref).total_seconds() / 86400.0) % syn
+    frac = age / syn
+    illum = (1 - math.cos(2 * math.pi * frac)) / 2 * 100
+    names = ["Luna nueva", "Luna creciente", "Cuarto creciente", "Gibosa creciente",
+             "Luna llena", "Gibosa menguante", "Cuarto menguante", "Luna menguante"]
+    icons = ["○", "◔", "◑", "◕", "●", "◕", "◑", "◔"]
+    k = int((frac * 8 + 0.5) % 8)
+    to_full = ((0.5 - frac) % 1.0) * syn
+    to_new = ((1.0 - frac) % 1.0) * syn
+    return names[k], icons[k], illum, to_full, to_new
+
+
+# rampa de color por temperatura (°C, índice de 256 colores): azul → celeste → aqua → crema → dorado → naranja → rojo
+TEMP_RAMP = [(-12, 99), (-6, 105), (0, 69), (5, 75), (9, 81), (13, 80), (15, 116), (17, 152), (19, 195),
+             (21, 230), (23, 229), (25, 222), (27, 221), (30, 215), (33, 209), (36, 203), (40, 197)]
+
+
+def temp_idx(t):
+    """Índice 256 para una temperatura en °C (límite superior exclusivo en cada tramo)."""
+    if t is None:
+        return 252
+    for lim, i in TEMP_RAMP:
+        if t < lim:
+            return i
+    return 196
+
+
+def make_tz(name, offset):
+    if ZoneInfo and name:
+        try:
+            return ZoneInfo(name)
+        except Exception:
+            pass
+    return timezone(timedelta(seconds=offset or 0))
+
+
+def parse_local(s, tz):
+    return datetime.strptime(s, "%Y-%m-%dT%H:%M").replace(tzinfo=tz)
+
+
+# ---------------------------------------------------------------- red y caché
+
+def get_json(url, params, timeout=12):
+    full = url + "?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(full, headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def cache_path(name):
+    return os.path.join(CACHE_DIR, name)
+
+
+def load_json(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def save_json(path, obj):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+ADMIN_PREFIX = re.compile(r"^(Partido|Departamento|Provincia|Estado|Región|Region|Ciudad Autónoma|Municipio) (de|del|de la|de los) ", re.I)
+
+
+def geo_label(g):
+    parts = [g.get("name") or ""]
+    for k in ("admin2", "admin1", "country"):
+        v = ADMIN_PREFIX.sub("", g.get(k) or "")
+        if v and v not in parts:
+            parts.append(v)
+    s = ", ".join(p for p in parts if p)
+    if g.get("pop"):
+        s += " · %s hab." % format(int(g["pop"]), ",").replace(",", ".")
+    return s
+
+
+def geocode(query, count=100, timeout=10):
+    """Busca una ciudad. Devuelve lista de dicts (cacheada por consulta)."""
+    key = "v2:" + query.strip().lower()
+    cache = load_json(cache_path("geo.json")) or {}
+    if key in cache:
+        return cache[key]
+    data = get_json(GEO_URL, {"name": query, "count": count, "language": "es", "format": "json"}, timeout)
+    res = []
+    for r in data.get("results") or []:
+        res.append({"name": r.get("name"), "country": r.get("country", ""), "cc": r.get("country_code", ""),
+                    "admin1": r.get("admin1", ""), "admin2": r.get("admin2", ""),
+                    "lat": r["latitude"], "lon": r["longitude"], "tz": r.get("timezone", ""),
+                    "pop": r.get("population") or 0})
+    if res:
+        cache[key] = res
+        save_json(cache_path("geo.json"), cache)
+    return res
+
+
+def coords_geo(query):
+    """'lat,lon' -> geo directo, o None si no tiene esa forma."""
+    m = re.match(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$", query or "")
+    if not m:
+        return None
+    lat, lon = float(m.group(1)), float(m.group(2))
+    return {"name": "%.2f, %.2f" % (lat, lon), "country": "", "admin1": "", "lat": lat, "lon": lon, "tz": "", "pop": 0}
+
+
+def score(r):
+    """Población, multiplicada si es del país preferido. Si el país preferido no trae
+    población (GeoNames no la tiene para muchas ciudades argentinas) se asume UNKNOWN_POP."""
+    pref = r.get("cc") == PREF_CC
+    pop = r.get("pop") or (UNKNOWN_POP if pref else 0)
+    return pop * (PREF_BOOST if pref else 1)
+
+
+def rank(res):
+    """Ordena: mayor score primero; en empate gana el país preferido (orden estable)."""
+    return sorted(res, key=lambda r: (-score(r), 0 if r.get("cc") == PREF_CC else 1))
+
+
+def place_text(r):
+    return ("%s %s %s %s" % (r.get("admin1") or "", r.get("admin2") or "", r.get("country") or "",
+                             r.get("cc") or "")).lower()
+
+
+def search_city(query):
+    """'Nombre', 'Nombre, provincia/país' o 'Nombre provincia': busca y filtra por el resto."""
+    query = " ".join((query or "").split())
+    name, _, filt = query.partition(",")
+    name, filt = name.strip(), filt.strip().lower()
+    res = geocode(name) if name else []
+    if filt:
+        hit = [r for r in res if filt in place_text(r)]
+        if not hit:  # el geocoder a veces entiende "Ciudad, País" por su cuenta
+            hit = geocode(query)
+        res = hit
+    elif not res:
+        # "buenos aires argentina" sin coma: probar las últimas palabras como filtro
+        words = name.split()
+        for i in range(len(words) - 1, 0, -1):
+            cand = geocode(" ".join(words[:i]))
+            f = " ".join(words[i:]).lower()
+            hit = [r for r in cand if f in place_text(r)]
+            if hit:
+                res = hit
+                break
+    return rank(res)
+
+
+def dominant(res):
+    """True si el primero es claramente el relevante (20x el score del segundo)."""
+    if len(res) < 2:
+        return True
+    s0, s1 = score(res[0]), score(res[1])
+    return s0 > 0 and s0 >= 20 * max(s1, 1)
+
+
+def resolve_city(query):
+    """query None -> última ciudad usada (o DEFAULT_CITY). 'lat,lon' -> coordenadas."""
+    if not query:
+        last = load_json(cache_path("last.json"))
+        if last and "lat" in last:
+            return last
+        query = DEFAULT_CITY
+    geo = coords_geo(query)
+    if geo:
+        return geo
+    res = search_city(query)
+    if not res:
+        raise LookupError("No encontré «%s»" % query)
+    return res[0]
+
+
+def load_weather(geo, force=False, ttl=CACHE_TTL, timeout=12):
+    """Devuelve {'geo','fc','aq','fetched','stale'}; usa caché si está fresca.
+    Si la red falla y hay caché vieja, la devuelve marcada como stale."""
+    path = cache_path("data_%.2f_%.2f.json" % (geo["lat"], geo["lon"]))
+    cached = load_json(path)
+    complete = bool(cached) and "minutely_15" in (cached.get("fc") or {})  # caché de versiones viejas
+    if cached and complete and not force and time.time() - cached.get("fetched", 0) < ttl:
+        cached["stale"] = False
+        save_json(cache_path("last.json"), geo)
+        return cached
+    try:
+        fc = get_json(FC_URL, {"latitude": geo["lat"], "longitude": geo["lon"], "current": CURRENT_VARS,
+                               "hourly": HOURLY_VARS, "daily": DAILY_VARS, "timezone": "auto",
+                               "minutely_15": "precipitation", "forecast_minutely_15": 48,
+                               "forecast_days": 7}, timeout)
+        aq = None
+        try:
+            aq = get_json(AQ_URL, {"latitude": geo["lat"], "longitude": geo["lon"],
+                                   "current": "european_aqi,us_aqi,pm2_5,pm10"}, 6).get("current")
+        except Exception:
+            pass
+        data = {"geo": geo, "fc": fc, "aq": aq, "fetched": time.time(), "stale": False}
+        save_json(path, data)
+        save_json(cache_path("last.json"), geo)
+        return data
+    except Exception as e:
+        if cached:
+            cached["stale"] = True
+            cached["error"] = str(e)
+            return cached
+        raise
+
+
+# ---------------------------------------------------------------- modelo
+
+class Model:
+    def __init__(self, data, units="c"):
+        self.data = data
+        self.geo = data["geo"]
+        self.fc = data["fc"]
+        self.aq = data.get("aq") or {}
+        self.fetched = data.get("fetched", time.time())
+        self.stale = data.get("stale", False)
+        self.salt = 0  # lo sube la App en cada carga para rotar los consejos
+        self.units = units
+        self.tz = make_tz(self.fc.get("timezone"), self.fc.get("utc_offset_seconds", 0))
+        self.cur = self.fc["current"]
+        self.h = self.fc["hourly"]
+        self.d = self.fc["daily"]
+        self.htimes = [parse_local(t, self.tz) for t in self.h["time"]]
+        self.dtimes = [datetime.strptime(t, "%Y-%m-%d").replace(tzinfo=self.tz) for t in self.d["time"]]
+        self.nh = len(self.htimes)
+        self.nd = len(self.dtimes)
+        self.m15 = self.fc.get("minutely_15") or None  # cachés viejas no lo traen
+        self.m15times = [parse_local(t, self.tz) for t in self.m15["time"]] if self.m15 else []
+
+    def now(self):
+        return datetime.now(self.tz)
+
+    def now_idx(self):
+        n = self.now().replace(minute=0, second=0, microsecond=0)
+        for i, t in enumerate(self.htimes):
+            if t >= n:
+                return i
+        return self.nh - 1
+
+    def day_of_hour(self, i):
+        d = self.htimes[max(0, min(i, self.nh - 1))].date()
+        for k, dt in enumerate(self.dtimes):
+            if dt.date() == d:
+                return k
+        return 0
+
+    def day_start_idx(self, k):
+        d = self.dtimes[k].date()
+        for i, t in enumerate(self.htimes):
+            if t.date() == d:
+                return i
+        return 0
+
+    # unidades
+    def temp(self, c):
+        return c * 9.0 / 5.0 + 32 if self.units == "f" else c
+
+    def tfmt(self, c, dec=0):
+        if c is None:
+            return "--°"
+        return ("%%.%df°" % dec) % self.temp(c)
+
+    def unit_letter(self):
+        return "F" if self.units == "f" else "C"
+
+    def wind(self, k):
+        return k * 0.621371 if self.units == "f" else k
+
+    def wunit(self):
+        return "mph" if self.units == "f" else "km/h"
+
+    # derivados
+    def sunrise(self, d=0):
+        return parse_local(self.d["sunrise"][d], self.tz)
+
+    def sunset(self, d=0):
+        return parse_local(self.d["sunset"][d], self.tz)
+
+    def uv_now(self):
+        v = self.h["uv_index"][self.now_idx()]
+        return v or 0.0
+
+    def precip_prob_next24(self):
+        i = self.now_idx()
+        vals = [v for v in self.h["precipitation_probability"][i:i + 24] if v is not None]
+        return max(vals) if vals else 0
+
+    def pressure_trend(self):
+        i = self.now_idx()
+        p = self.h["pressure_msl"]
+        if i >= 3 and p[i] is not None and p[i - 3] is not None:
+            diff = p[i] - p[i - 3]
+        else:
+            diff = 0
+        if diff >= 1.0:
+            return "▲", "subiendo", "ok"
+        if diff <= -1.0:
+            return "▼", "bajando", "warn"
+        return "►", "estable", "dim"
+
+    def rain_outlook(self):
+        """Lluvia en cuartos de hora (12 h). Devuelve (estado, min_inicio, min_fin, serie_3h) o None.
+        estado: 'now' llueve ahora · 'soon' se larga en min_inicio · 'dry' nada a la vista."""
+        if not self.m15:
+            return None
+        now = self.now()
+        p = self.m15.get("precipitation") or []
+        i0 = next((i for i, t in enumerate(self.m15times) if t + timedelta(minutes=15) > now), None)
+        if i0 is None or i0 >= len(p):
+            return None
+        times = self.m15times[i0:]
+        vals = [v or 0 for v in p[i0:]]
+        wet = [v > 0.05 for v in vals]
+        spark = vals[:12]
+
+        def mins(k):
+            return max(0, int((times[k] - now).total_seconds() // 60))
+        if wet[0]:
+            k = next((k for k, w in enumerate(wet) if not w), None)
+            return ("now", 0, mins(k) if k is not None else None, spark)
+        k = next((k for k, w in enumerate(wet) if w), None)
+        if k is None:
+            return ("dry", None, None, spark)
+        e = next((e for e in range(k, len(wet)) if not wet[e]), None)
+        return ("soon", mins(k), mins(e) if e is not None else None, spark)
+
+    def asado(self):
+        """Índice de asado 0-10 para hoy (o mañana si ya es de noche): (índice, 'hoy'/'mañana', frase)."""
+        k = 1 if self.now().hour >= 21 and self.nd > 1 else 0
+        prob = self.d["precipitation_probability_max"][k] or 0
+        tmax = self.d["temperature_2m_max"][k]
+        wmax = self.d["wind_speed_10m_max"][k] or 0
+        code = self.d["weather_code"][k] or 0
+        sc = 10.0 - prob / 10.0
+        if tmax is not None:
+            sc -= 3 if tmax < 10 else (1.5 if tmax < 16 else (2 if tmax > 36 else 0))
+        sc -= 3 if wmax >= 45 else (1.5 if wmax >= 30 else 0)
+        if code >= 95:
+            sc -= 3
+        sc = max(0, min(10, int(round(sc))))
+        if sc >= 9:
+            txt = "Alto día pa' asado. Prendé el fuego de una."
+        elif sc >= 7:
+            txt = "Zafa pa' asado. Tené la lona a mano por las dudas."
+        elif sc >= 4:
+            txt = "Medio pelo pa' asado. Fijate a la tarde cómo viene."
+        elif sc >= 2:
+            txt = "Flojo pa' asado. Parrilla bajo techo o pedís delivery."
+        else:
+            txt = "Ni en pedo asado. Delivery y a otra cosa."
+        return sc, ("mañana" if k else "hoy"), txt
+
+    def tender(self):
+        """Horas secas por delante y cómo seca: (horas, calidad, frase)."""
+        i = self.now_idx()
+        pp, pr = self.h["precipitation_probability"], self.h["precipitation"]
+        dry = 0
+        for j in range(i, min(self.nh, i + 24)):
+            if (pp[j] or 0) >= 40 or (pr[j] or 0) >= 0.2:
+                break
+            dry += 1
+        cur = self.cur
+        hum, t, ws = cur["relative_humidity_2m"], cur["temperature_2m"], cur["wind_speed_10m"]
+        day = cur.get("is_day", 1) == 1
+        if hum >= 80 or (not day and t < 15):
+            q = "seca lento"
+        elif t >= 22 and ws >= 10 and hum <= 60:
+            q = "seca rápido"
+        else:
+            q = "seca normal"
+        if (cur["precipitation"] or 0) > 0:
+            txt = "Está lloviendo, ni se te ocurra colgar."
+        elif dry == 0:
+            txt = "Se larga ya. Hoy no se cuelga nada."
+        elif dry < 3:
+            txt = "Yo no colgaría: en %d h se larga." % dry
+        elif dry < 6:
+            txt = "Colgá pero mirá el cielo: en %d h puede largarse." % dry
+        elif dry >= 24:
+            txt = "Colgá tranqui, todo el día seco por delante."
+        else:
+            txt = "Colgá tranqui: %d h secas por delante." % dry
+        return dry, q, txt
+
+    def tips(self):
+        cur = self.cur
+        t = cur["temperature_2m"]
+        ap = cur["apparent_temperature"]
+        kind = wmo(cur["weather_code"])[1]
+        ws, wg = cur["wind_speed_10m"], cur["wind_gusts_10m"]
+        hum = cur["relative_humidity_2m"]
+        uv = self.d["uv_index_max"][0] or 0
+        pp = self.precip_prob_next24()
+        # salt: la App arranca en un punto al azar y lo sube en cada carga (cambio de
+        # ciudad, refresco), así cada carga rota a la frase siguiente y nunca repite
+        base = self.salt
+        used = set()
+
+        def voc(s):
+            """Vocativo de la frase (perro/perri cuentan como uno), o None."""
+            words = re.findall(r"[a-záéíóúñ]+", s.lower())
+            for v, fam in (("perro", "perro"), ("perri", "perro"), ("gato", "gato"), ("wacho", "wacho")):
+                if v in words:
+                    return fam
+            return None
+
+        def pick(*opts):
+            """Rota entre las opciones, evitando repetir el vocativo de un consejo anterior."""
+            free = [o for o in opts if voc(o) not in used] or list(opts)
+            o = free[base % len(free)]
+            if voc(o):
+                used.add(voc(o))
+            return o
+        out = []
+        if kind == "storm":
+            out.append(pick(
+                "Se viene alta tormenta perro. Rescatate y quedate en el bulín.",
+                "Fuaa alto quilombo se viene, gato. Ni en pedo salgas ahora.",
+                "Alta tormenta wacho, se re pudre todo. Entrá las cosas del balcón.",
+                "Tremenda tormenta perri. Desenchufá todo y hacete el pillo adentro."))
+        elif kind in ("rain", "showers", "drizzle"):
+            out.append(pick(
+                "Ta' lloviendo mal gato. Llevá el paraguas o te re mojás.",
+                "Alta lluvia perro, está pa' quedarse en el bulín viendo pelis.",
+                "Se re largó wacho. Paraguas sí o sí, no te flashees.",
+                "Llueve mal perri. Entrá la ropa del tender que se te re moja."))
+        elif pp >= 60:
+            out.append(pick(
+                "%d%% de lluvia perro. Llevá el paraguas, no te hagas el loco." % pp,
+                "Se larga mal, %d%%. Ponete pillo y llevá algo pa' taparte." % pp,
+                "Alta chance de lluvia (%d%%) wacho. Yo que vos no cuelgo la ropa." % pp))
+        elif kind == "snow":
+            out.append(pick(
+                "Nieva perro. Dos buzos, bufanda y pisá tranqui que te vas al piso.",
+                "Alta nieve wacho. Sacá la foto y metete adentro de una."))
+        elif kind == "fog":
+            out.append(pick(
+                "Alta niebla gato, no se ve nada. Si manejás andá re tranqui.",
+                "No se ve un carajo perro. Bajas y despacio, sin flashear piloto."))
+        if ap >= 33:
+            out.append(pick(
+                "Alto calor perro, se re prende fuego todo. Agua y ventilador.",
+                "Fuaa está pa' morirse wacho. Pileta o heladera, no hay otra.",
+                "Tremendo calor gato. Ducha fría, persiana baja y quedate en patas.",
+                "Se re derrite todo perri. Hidratate mal y ni un paso al sol."))
+        elif ap >= 28:
+            out.append(pick(
+                "Alto día pa' pileta perro. Fernet, pileta y a flashear verano.",
+                "Está pa' pileta y birra helada wacho, alto calorcito.",
+                "Fuaa qué lindo calor gato. Musculosa, ojotas y a la pileta.",
+                "Alto día de verano perri. Asadito y birra, de una."))
+        elif ap >= 22:
+            out.append(pick(
+                "Está re piola el día perro. Salí a dar una vuelta, aprovechá.",
+                "Alto día wacho, ni frío ni calor. Mates en la plaza de una.",
+                "Qué lindo está gato, tremendo clima. No te quedes adentro.",
+                "Está nashe el día perri. Sacá la reposera y flasheá vacaciones."))
+        elif ap >= 15:
+            out.append(pick(
+                "Está fresquito gato. Ponete el buzo y salís re tranqui.",
+                "Re piola pero fresco perro. Camperita y listo, no te flashees.",
+                "Mirá que a la noche refresca wacho. Llevá campera por las dudas.",
+                "Ni frío ni calor perri. Con un buzo vas de diez."))
+        elif ap >= 8:
+            out.append(pick(
+                "Alto frío perro. Ponete piola y abrigate.",
+                "Hace un frío que la re pela wacho. Campera y bufanda, de una.",
+                "Fuaa qué frío gato. Ponete pillo y abrigate que te enfermás.",
+                "Frío mal perri. Mate caliente y ni en pedo salgas en remera."))
+        else:
+            out.append(pick(
+                "Alto frío polar perro. Se te re congelan hasta las ideas.",
+                "Me re cago de frío wacho. Estufa a full y no salgas ni al kiosco.",
+                "Fuaa está helado gato. Ponete todo lo que tengas, posta.",
+                "Frío tremendo perri. Manta, mate y a dormir corte oso."))
+        if ws >= 45:
+            out.append(pick(
+                "Alto viento perro (%d km/h). Entrá las macetas que se re vuelan." % ws,
+                "Se re vuela todo wacho, %d km/h de viento. Cerrá las ventanas." % ws,
+                "Tremendo viento gato (%d km/h). Ojo que te lleva puesto." % ws))
+        elif wg >= 60:
+            out.append(pick(
+                "Ráfagas de %d km/h perro. Agarrate el gorro que se re vuela." % wg,
+                "Altas ráfagas wacho (%d km/h). Bajá las persianas de una." % wg))
+        if uv >= 8:
+            out.append(pick(
+                "Alto sol perro (UV %.0f). Protector o quedás corte langostino." % uv,
+                "El sol re pega hoy gato (UV %.0f). Protector, no te flashees." % uv,
+                "UV altísimo wacho (%.0f). Gorra, protector y a la sombra." % uv))
+        if hum >= 85 and t >= 24:
+            out.append(pick(
+                "Alta humedad perro. Te re pegás a la silla, no se banca.",
+                "Fuaa la humedad wacho. Se siente re peor de lo que marca.",
+                "Está pegajoso mal gato. Ducha fría y ventilador a full."))
+        return out[:3]
+
+
+# ---------------------------------------------------------------- colores
+
+class Colors:
+    LEVELS = [0, 95, 135, 175, 215, 255]
+    BASIC = [(0, 0, 0), (205, 0, 0), (0, 205, 0), (205, 205, 0), (0, 0, 238), (205, 0, 205),
+             (0, 205, 205), (229, 229, 229)]
+
+    def __init__(self):
+        self.pairs = {}
+        self.cache = {}
+        self.n = 1
+        self.ok = False
+        try:
+            curses.start_color()
+            curses.use_default_colors()
+            self.ok = curses.has_colors()
+        except curses.error:
+            self.ok = False
+        self.ncolors = curses.COLORS if self.ok else 0
+
+    def rgb_to_256(self, rgb):
+        if rgb in self.cache:
+            return self.cache[rgb]
+        r, g, b = rgb
+        if abs(r - g) < 12 and abs(g - b) < 12:
+            v = (r + g + b) // 3
+            i = 16 if v < 8 else (231 if v > 238 else 232 + int(round((v - 8) / 247.0 * 23)))
+        else:
+            def q(c):
+                return min(range(6), key=lambda k: abs(self.LEVELS[k] - c))
+            i = 16 + 36 * q(r) + 6 * q(g) + q(b)
+        self.cache[rgb] = i
+        return i
+
+    def idx_to_rgb(self, i):
+        if i < 16:
+            return self.BASIC[i % 8]
+        if i >= 232:
+            v = 8 + (i - 232) * 10
+            return (v, v, v)
+        i -= 16
+        return (self.LEVELS[i // 36], self.LEVELS[(i // 6) % 6], self.LEVELS[i % 6])
+
+    def nearest_basic(self, rgb):
+        return min(range(8), key=lambda k: sum((self.BASIC[k][j] - rgb[j]) ** 2 for j in range(3)))
+
+    def pair_idx(self, i):
+        if not self.ok:
+            return 0
+        if self.ncolors < 256:
+            i = self.nearest_basic(self.idx_to_rgb(i))
+        if i not in self.pairs:
+            if self.n >= curses.COLOR_PAIRS:
+                return 0
+            try:
+                curses.init_pair(self.n, i, -1)
+            except curses.error:
+                return 0
+            self.pairs[i] = self.n
+            self.n += 1
+        return curses.color_pair(self.pairs[i])
+
+    def pair(self, rgb):
+        return self.pair_idx(self.rgb_to_256(rgb))
+
+
+# ---------------------------------------------------------------- la app
+
+class App:
+    def __init__(self, stdscr, args):
+        self.stdscr = stdscr
+        self.args = args
+        self.units = "f" if args.fahrenheit else "c"
+        self.anim = not args.no_anim
+        self.ttl = args.ttl
+        self.col = Colors()
+        self.model = None
+        self.err = None
+        self.loading = False
+        self.loads = random.randrange(1000)
+        self.frame = 0
+        self.last_tick = -1
+        self.scroll = 0
+        self.hour_off = None  # None = desde ahora
+        self.particles = []
+        self.flash = 0
+        self.content_h = 0
+        self.q = queue.Queue()
+        self.pad = None
+        self.msg = None
+        self.msg_until = 0
+        self.last_auto = 0
+        self.query = " ".join(args.ciudad) if args.ciudad else None
+        try:
+            curses.curs_set(0)
+        except curses.error:
+            pass
+        stdscr.keypad(True)
+        stdscr.timeout(FRAME_MS)
+
+    # --- helpers de dibujo
+    def c(self, name, bold=False, dim=False, rev=False):
+        attr = self.col.pair(PAL[name])
+        if bold:
+            attr |= curses.A_BOLD
+        if dim:
+            attr |= curses.A_DIM
+        if rev:
+            attr |= curses.A_REVERSE
+        return attr
+
+    def ct(self, tc, bold=False):
+        attr = self.col.pair_idx(temp_idx(tc))
+        return attr | curses.A_BOLD if bold else attr
+
+    def put(self, win, y, x, s, attr=0, maxw=None):
+        try:
+            h, w = win.getmaxyx()
+            if y < 0 or y >= h or x >= w:
+                return
+            if x < 0:
+                s = s[-x:]
+                x = 0
+            if maxw is not None:
+                s = s[:max(0, maxw)]
+            s = s[:w - x]
+            if not s:
+                return
+            win.addstr(y, x, s, attr)
+        except curses.error:
+            pass
+
+    def icon(self, code, is_day):
+        kind = art_kind(wmo(code)[1], is_day)
+        return ICON[kind], self.c(ICON_COLOR[kind], bold=True)
+
+    def section(self, pad, y, W, title, right=""):
+        self.put(pad, y, 0, "─" * W, self.c("dim"))
+        self.put(pad, y, 2, " %s " % title, self.c("accent", bold=True))
+        if right:
+            self.put(pad, y, max(0, W - len(right) - 4), " %s " % right, self.c("dim"))
+        return y + 1
+
+    def flash_msg(self, text, secs=3):
+        self.msg = text
+        self.msg_until = time.time() + secs
+
+    # --- datos en segundo plano
+    def start_fetch(self, query=None, geo=None, force=False):
+        self.loading = True
+        self.err = None
+        th = threading.Thread(target=self.job_load, args=(query, geo, force), daemon=True)
+        th.start()
+
+    def job_load(self, query, geo, force):
+        try:
+            if geo is None:
+                geo = resolve_city(query)
+            data = load_weather(geo, force=force, ttl=self.ttl)
+            self.q.put(("data", data))
+        except Exception as e:
+            self.q.put(("error", "%s" % e))
+
+    def poll(self):
+        while True:
+            try:
+                kind, payload = self.q.get_nowait()
+            except queue.Empty:
+                break
+            self.loading = False
+            if kind == "data":
+                if self.args.demo:
+                    self.apply_demo(payload)
+                same = self.model is not None and self.model.geo.get("lat") == payload["geo"].get("lat") \
+                    and self.model.geo.get("lon") == payload["geo"].get("lon")
+                self.model = Model(payload, self.units)
+                self.loads += 1
+                self.model.salt = self.loads
+                self.err = None
+                if not same:
+                    self.hour_off = None
+                    self.scroll = 0
+                    self.particles = []
+                if self.model.stale:
+                    self.flash_msg("Sin conexión: muestro datos de %s" % fmt_ago(time.time() - self.model.fetched), 6)
+            else:
+                self.err = payload
+
+    def apply_demo(self, payload):
+        """--demo: pisa la condición actual para probar el arte y las animaciones."""
+        parts = [p.strip().lower() for p in self.args.demo.split(",")]
+        cur = payload["fc"]["current"]
+        try:
+            cur["weather_code"] = int(parts[0])
+        except ValueError:
+            pass
+        if any(p in ("noche", "night") for p in parts[1:]):
+            cur["is_day"] = 0
+        elif any(p in ("dia", "día", "day") for p in parts[1:]):
+            cur["is_day"] = 1
+        # cuartos de hora simulados: con código de lluvia/tormenta llueve ahora (para en 1h30);
+        # con ",lluvia" se larga en ~25 min y dura 1h
+        code = cur.get("weather_code", 0)
+        raining = code >= 51 and code not in (71, 73, 75, 77, 85, 86)
+        soon = any(p in ("lluvia", "rain") for p in parts[1:])
+        if raining or soon:
+            tz = make_tz(payload["fc"].get("timezone"), payload["fc"].get("utc_offset_seconds", 0))
+            now = datetime.now(tz).replace(second=0, microsecond=0)
+            base = now - timedelta(minutes=now.minute % 15)
+            times = [(base + timedelta(minutes=15 * i)).strftime("%Y-%m-%dT%H:%M") for i in range(48)]
+            prof = [0.6, 1.4, 2.0, 1.2, 0.5, 0.2] if raining else [0, 0, 0.3, 0.9, 1.6, 0.8, 0.3]
+            payload["fc"]["minutely_15"] = {"time": times, "precipitation": prof + [0] * (48 - len(prof))}
+            if raining:
+                cur["precipitation"] = prof[0]
+
+    # --- loop principal
+    def run(self):
+        if self.query:
+            self.start_fetch(query=self.query)
+        else:
+            self.startup_prompt()
+        while True:
+            self.poll()
+            if self.model and not self.loading and time.time() - self.model.fetched > self.ttl \
+                    and time.time() - self.last_auto > 60:
+                self.last_auto = time.time()
+                self.start_fetch(geo=self.model.geo, force=True)
+            self.render()
+            try:
+                ch = self.stdscr.get_wch()
+            except curses.error:
+                ch = None
+            if ch is None:
+                self.frame += 1
+                continue
+            if not self.handle_key(ch):
+                break
+
+    def hour_start(self, m, ncol):
+        start = m.now_idx() if self.hour_off is None else self.hour_off
+        return max(0, min(start, m.nh - ncol))
+
+    def ncol(self, W):
+        return max(6, min(24, (W - 4) // 4))
+
+    def handle_key(self, ch):
+        m = self.model
+        H, W = self.stdscr.getmaxyx()
+        view_h = max(1, H - 2)
+        if ch in ("q", "Q"):
+            return False
+        if ch == curses.KEY_RESIZE:
+            try:
+                curses.update_lines_cols()
+            except Exception:
+                pass
+            self.pad = None
+            return True
+        if ch in ("r", "R"):
+            if m:
+                self.start_fetch(geo=m.geo, force=True)
+            else:
+                self.start_fetch(query=self.query)
+            self.flash_msg("Refrescando…")
+            return True
+        if ch in ("c", "C", "/"):
+            self.change_city()
+            return True
+        if ch in ("u", "U"):
+            self.units = "f" if self.units == "c" else "c"
+            if m:
+                m.units = self.units
+            return True
+        if ch in ("a", "A"):
+            self.anim = not self.anim
+            self.particles = []
+            return True
+        if ch == "?":
+            self.popup_help()
+            return True
+        if ch in (curses.KEY_DOWN, "j"):
+            self.scroll += 1
+        elif ch in (curses.KEY_UP, "k"):
+            self.scroll -= 1
+        elif ch in (curses.KEY_NPAGE, " "):
+            self.scroll += view_h
+        elif ch == curses.KEY_PPAGE:
+            self.scroll -= view_h
+        elif ch in (curses.KEY_HOME, "g"):
+            self.scroll = 0
+        elif ch in (curses.KEY_END, "G"):
+            self.scroll = 10 ** 6
+        elif m and ch in (curses.KEY_RIGHT, "l"):
+            self.hour_off = min(m.nh - 1, self.hour_start(m, self.ncol(W)) + 6)
+        elif m and ch in (curses.KEY_LEFT, "h"):
+            self.hour_off = max(0, self.hour_start(m, self.ncol(W)) - 6)
+        elif m and ch in ("\t", curses.KEY_BTAB):
+            d = m.day_of_hour(self.hour_start(m, self.ncol(W)))
+            d = (d + (1 if ch == "\t" else -1)) % m.nd
+            self.hour_off = None if d == 0 else m.day_start_idx(d)
+        elif m and isinstance(ch, str) and ch.isdigit() and 1 <= int(ch) <= m.nd:
+            d = int(ch) - 1
+            self.hour_off = None if d == 0 else m.day_start_idx(d)
+        elif ch in ("t", "T"):
+            self.hour_off = None
+        self.scroll = max(0, self.scroll)
+        return True
+
+    # --- render
+    def render(self):
+        H, W = self.stdscr.getmaxyx()
+        self.stdscr.erase()
+        if H < 12 or W < 72:
+            self.put(self.stdscr, 0, 0, "Agrandá la terminal (mínimo 72x12). q para salir.", self.c("warn", bold=True))
+            self.stdscr.refresh()
+            return
+        if self.pad is None or self.pad.getmaxyx()[1] != W:
+            self.pad = curses.newpad(PAD_H, W)
+        self.draw_header(W)
+        pad = self.pad
+        pad.erase()
+        y = 0
+        if self.model:
+            m = self.model
+            y = self.draw_now(pad, y, W, m)
+            y = self.draw_asado(pad, y, W, m)
+            y = self.draw_sunmoon(pad, y, W, m)
+            y = self.draw_hourly(pad, y, W, m)
+            y = self.draw_daily(pad, y, W, m)
+            y = self.draw_tips(pad, y, W, m)
+        elif self.err:
+            y = self.draw_error(pad, y, W)
+        elif self.loading:
+            y = self.draw_loading(pad, y, W)
+        self.content_h = y
+        view_h = H - 2
+        max_scroll = max(0, self.content_h - view_h)
+        self.scroll = max(0, min(self.scroll, max_scroll))
+        self.draw_footer(H, W, max_scroll)
+        self.stdscr.noutrefresh()
+        pad.noutrefresh(self.scroll, 0, 1, 0, H - 2, W - 1)
+        curses.doupdate()
+
+    def draw_header(self, W):
+        attr = self.c("title", rev=True)
+        self.put(self.stdscr, 0, 0, " " * (W - 1), attr)
+        self.put(self.stdscr, 0, 0, " ☀ TIEMPO ", attr | curses.A_BOLD)
+        m = self.model
+        if m:
+            where = geo_label({k: m.geo.get(k) for k in ("name", "admin1", "country")})
+            now = m.now()
+            right = "%s %d %s %d · %s " % (DAYS[now.weekday()], now.day, MONTHS[now.month - 1], now.year,
+                                          now.strftime("%H:%M:%S"))
+            self.put(self.stdscr, 0, 11, where, attr, maxw=W - 12 - len(right) - 2)
+            self.put(self.stdscr, 0, max(11, W - 1 - len(right)), right, attr)
+        else:
+            self.put(self.stdscr, 0, 11, self.query or "…", attr, maxw=W - 13)
+
+    def draw_footer(self, H, W, max_scroll):
+        attr = self.c("text", rev=True)
+        self.put(self.stdscr, H - 1, 0, " " * (W - 1), attr)
+        keys = " q salir · r refrescar · c ciudad · u °C/°F · ←→ horas · Tab día · ↑↓ scroll · ? ayuda"
+        if self.loading:
+            right = "cargando %s " % SPINNER[self.frame % len(SPINNER)]
+        elif self.msg and time.time() < self.msg_until:
+            right = self.msg + " "
+        elif self.model:
+            m = self.model
+            right = "actualizado %s" % fmt_ago(time.time() - m.fetched)
+            if m.stale:
+                right += " · SIN CONEXIÓN (caché)"
+            right += " · Open-Meteo "
+        else:
+            right = ""
+        if max_scroll > 0:
+            right = ("▲" if self.scroll > 0 else " ") + ("▼" if self.scroll < max_scroll else " ") + " " + right
+        self.put(self.stdscr, H - 1, 0, keys, attr, maxw=max(0, W - 2 - len(right)))
+        self.put(self.stdscr, H - 1, max(0, W - 1 - len(right)), right, attr)
+
+    def draw_loading(self, pad, y, W):
+        sp = SPINNER[self.frame % len(SPINNER)]
+        what = self.query or "la última ciudad"
+        line = "%s  Buscando el clima de %s…" % (sp, what)
+        self.put(pad, y + 3, max(2, (W - len(line)) // 2), line, self.c("accent", bold=True))
+        return y + 6
+
+    def draw_error(self, pad, y, W):
+        self.put(pad, y + 2, 4, "✗ No pude traer los datos", self.c("crit", bold=True))
+        for i, line in enumerate(wrap(self.err or "", W - 8)):
+            self.put(pad, y + 3 + i, 6, line, self.c("text"))
+        self.put(pad, y + 6, 4, "r para reintentar · c para elegir otra ciudad · q para salir", self.c("dim"))
+        return y + 8
+
+    # --- AHORA
+    def draw_now(self, pad, y, W, m):
+        y = self.section(pad, y, W, "AHORA")
+        cur = m.cur
+        is_day = cur.get("is_day", 1) == 1
+        desc, kind = wmo(cur["weather_code"])
+        kind = art_kind(kind, is_day)
+        t = cur["temperature_2m"]
+        big = big_text(m.tfmt(t) + (m.unit_letter() if W >= 96 else ""))
+        bigw = len(big[0])
+        attr = self.ct(t, bold=True)
+        for i, row in enumerate(big):
+            self.put(pad, y + i, 2, row, attr)
+        for i, line in enumerate(wrap(desc, max(bigw - 1, 14))[:2]):
+            self.put(pad, y + 6 + i, 2, line, self.c("title", bold=True))
+        xa = 2 + bigw + 2
+        self.draw_art(pad, y, xa, kind)
+        xd = xa + 18
+        self.draw_details(pad, y, xd, W - xd - 2, m)
+        self.draw_rainline(pad, y + 9, 2, W - 4, m)
+        return y + 11
+
+    def draw_rainline(self, pad, y, x, w, m):
+        """'Se larga en 25m (23:10), para a las 00:40' + sparkline de las próximas 3 h."""
+        ro = m.rain_outlook()
+        if not ro:
+            return
+        state, a, b, spark = ro
+        now = m.now()
+
+        def at(mn):
+            return (now + timedelta(minutes=mn)).strftime("%H:%M")
+        if state == "now":
+            txt = "☂ Está lloviendo" + (", para a las %s (%s)" % (at(b), fmt_min(b)) if b is not None else " y no para en 12 h")
+            attr = self.c("rain", bold=True)
+        elif state == "soon":
+            txt = "☂ Se larga en %s (%s)" % (fmt_min(a), at(a)) + (", para a las %s" % at(b) if b is not None else "")
+            attr = self.c("rain", bold=a <= 60)
+        else:
+            txt = "☂ Sin lluvia a la vista en las próximas 12 h"
+            attr = self.c("dim")
+        self.put(pad, y, x, txt, attr, maxw=w)
+        if spark and max(spark) > 0.05 and w - len(txt) > 24:
+            top = max(spark + [1.0])
+            bars = "".join("▁▂▃▄▅▆▇█"[min(7, int(v / top * 7.999))] if v > 0.02 else "·" for v in spark)
+            label = "próx. 3 h "
+            xs = x + w - len(bars) - len(label)
+            self.put(pad, y, xs, label, self.c("dim"))
+            self.put(pad, y, xs + len(label), bars, self.c("rain"))
+
+    def draw_asado(self, pad, y, W, m):
+        y = self.section(pad, y, W, "ASADO Y TENDER")
+        sc, when, txt = m.asado()
+        col = "ok" if sc >= 7 else ("warn" if sc >= 4 else "bad")
+        y = self.index_row(pad, y, W, "Asado %s" % when, bar10(sc * 10), "%2d/10" % sc, col, txt)
+        dry, q, txt = m.tender()
+        col = "ok" if dry >= 6 else ("warn" if dry >= 3 else "bad")
+        y = self.index_row(pad, y, W, "Tender", bar10(min(dry, 12) / 12.0 * 100),
+                           "24h+" if dry >= 24 else "%2d h" % dry, col, "%s · %s" % (txt.rstrip("."), q))
+        return y + 1
+
+    def index_row(self, pad, y, W, label, bar, num, col, txt):
+        """Fila 'etiqueta  barra  número  frase'; si la frase no entra, va en la línea de abajo."""
+        self.put(pad, y, 2, label, self.c("dim"))
+        self.put(pad, y, 15, bar, self.c(col))
+        self.put(pad, y, 26, num, self.c(col, bold=True))
+        if 33 + len(txt) <= W - 2:
+            self.put(pad, y, 33, txt, self.c("text"))
+            return y + 1
+        self.put(pad, y + 1, 15, txt, self.c("text"), maxw=W - 17)
+        return y + 2
+
+    def draw_art(self, pad, y, x, kind):
+        base = ART[kind]
+        f = self.frame
+        anim = self.anim
+        precip = kind in PRECIP
+        dx = 0
+        if anim:
+            if kind == "sun" and (f // 4) % 2:
+                base = ART["sun_b"]
+            elif kind == "cloud":
+                dx = int(round(math.sin(f / 9.0)))
+            elif kind == "fog":
+                off = (f // 2) % 4
+                base = [[("             ", "fog")]] + \
+                       [[(("_ - " * 6)[(off + r * 2) % 4:][:13], "fog")] for r in range(3)] + \
+                       [[("             ", "fog")]]
+        rows = base[:3] if (anim and precip) else base
+        for r, segs in enumerate(rows):
+            xx = x + dx
+            for text, cname in segs:
+                bold = cname in ("sun", "bolt", "moon")
+                if cname == "sun" and anim and kind == "suncloud":
+                    bold = (f // 5) % 2 == 0
+                attr = self.c(cname, bold=bold)
+                if cname == "star":
+                    attr = self.c("star", bold=((f // 3 + r) % 2 == 0), dim=((f // 3 + r) % 2 == 1)) if anim \
+                        else self.c("star")
+                if anim and self.flash and cname == "cloud":
+                    attr = self.c("bolt", bold=True)
+                self.put(pad, y + r, xx, text, attr)
+                xx += len(text)
+        if anim and precip:
+            self.tick_particles(kind)
+            pattr = self.c("snow" if kind == "snow" else "rain")
+            for py, px, chp in self.particles:
+                self.put(pad, y + py, x + px, chp, pattr)
+            if kind == "storm" and self.flash:
+                for _ in range(3):
+                    self.put(pad, y + random.randint(3, 6), x + random.randint(3, 12), "ϟ", self.c("bolt", bold=True))
+
+    def tick_particles(self, kind):
+        if self.frame == self.last_tick:
+            return
+        self.last_tick = self.frame
+        chars, rate = PRECIP[kind]
+        for p in self.particles:
+            p[0] += 1
+            if kind == "snow":
+                p[1] += random.choice((-1, 0, 0, 1))
+        self.particles = [p for p in self.particles if p[0] <= 7 and 2 <= p[1] <= 13]
+        n = int(rate) + (1 if random.random() < rate - int(rate) else 0)
+        for _ in range(n):
+            self.particles.append([3, random.randint(3, 12), random.choice(chars)])
+        if kind == "storm":
+            if self.flash:
+                self.flash -= 1
+            elif random.random() < 0.05:
+                self.flash = 2
+
+    def draw_details(self, pad, y, x, w, m):
+        cur = m.cur
+        text, dim = self.c("text"), self.c("dim")
+        rows = []
+        ap = cur["apparent_temperature"]
+        rows.append(("Sensación", [(m.tfmt(ap, 1), self.ct(ap, bold=True))]))
+        hum = cur["relative_humidity_2m"]
+        rows.append(("Humedad", [("%d%%  " % hum, text), (bar10(hum), self.c("accent"))]))
+        ws, wd, wg = cur["wind_speed_10m"], cur["wind_direction_10m"], cur["wind_gusts_10m"]
+        wattr = self.c("bad", bold=True) if ws >= 60 else (self.c("warn") if ws >= 40 else text)
+        rows.append(("Viento", [("%.0f %s " % (m.wind(ws), m.wunit()), wattr),
+                                ("del %s %s" % (compass(wd), arrow(wd)), text),
+                                ("  ráf. %.0f" % m.wind(wg), dim)]))
+        sym, trend, tcol = m.pressure_trend()
+        rows.append(("Presión", [("%.0f hPa " % cur["pressure_msl"], text), ("%s %s" % (sym, trend), self.c(tcol))]))
+        cc = cur["cloud_cover"]
+        rows.append(("Nubosidad", [("%d%%  " % cc, text), (bar10(cc), self.c("cloud2"))]))
+        uv = m.uv_now()
+        ulabel, ucol = uv_level(uv)
+        rows.append(("UV", [("%.1f  " % uv, self.c(ucol, bold=True)), (ulabel, self.c(ucol))]))
+        if m.aq and m.aq.get("european_aqi") is not None:
+            aqi = m.aq["european_aqi"]
+            alabel, acol = aqi_level(aqi)
+            pm = m.aq.get("pm2_5")
+            segs = [("AQI %d  " % aqi, self.c(acol, bold=True)), (alabel, self.c(acol))]
+            if pm is not None and w >= 44:
+                segs.append(("  PM2.5 %.0f µg/m³" % pm, dim))
+            rows.append(("Aire", segs))
+        pr = cur["precipitation"] or 0
+        pp = m.precip_prob_next24()
+        pattr = self.c("rain", bold=pp >= 60) if pp >= 30 else dim
+        rows.append(("Lluvia", [("%.1f mm ahora" % pr, self.c("rain") if pr > 0 else text),
+                                (("  ·  %d%% próx. 24 hs" if w >= 44 else "  · %d%% 24h") % pp, pattr)]))
+        tmin, tmax = m.d["temperature_2m_min"][0], m.d["temperature_2m_max"][0]
+        rows.append(("Hoy", [("↓ " + m.tfmt(tmin), self.ct(tmin, bold=True)), ("   ", 0),
+                             ("↑ " + m.tfmt(tmax), self.ct(tmax, bold=True))]))
+        for i, (label, segs) in enumerate(rows):
+            self.put(pad, y + i, x, "%-11s" % label, dim)
+            xx = x + 11
+            for s, attr in segs:
+                self.put(pad, y + i, xx, s, attr, maxw=x + w - xx)
+                xx += len(s)
+
+    # --- SOL Y LUNA
+    def draw_sunmoon(self, pad, y, W, m):
+        y = self.section(pad, y, W, "SOL Y LUNA")
+        now = m.now()
+        sr, ss = m.sunrise(0), m.sunset(0)
+        x0, aw = 11, max(10, W - 24)
+        day = sr <= now <= ss
+        arc_attr = self.c("sun", dim=True) if day else self.c("dim")
+        for col in range(aw):
+            f = col / float(aw - 1)
+            r = 2 - int(round(math.sin(math.pi * f) * 2))
+            self.put(pad, y + r, x0 + col, "·", arc_attr)
+        if day:
+            f = (now - sr).total_seconds() / max(1.0, (ss - sr).total_seconds())
+            marker, mattr = "☀", self.c("sun", bold=True)
+            info = "día de %s  ·  faltan %s para el atardecer" % (fmt_dur(ss - sr), fmt_dur(ss - now))
+        else:
+            if now > ss:
+                prev_ss, next_sr = ss, (m.sunrise(1) if m.nd > 1 else sr + timedelta(days=1))
+            else:
+                prev_ss, next_sr = ss - timedelta(days=1), sr
+            f = (now - prev_ss).total_seconds() / max(1.0, (next_sr - prev_ss).total_seconds())
+            marker, mattr = "☾", self.c("moon", bold=True)
+            info = "noche  ·  sale el sol en %s (%s)" % (fmt_dur(next_sr - now), next_sr.strftime("%H:%M"))
+        f = max(0.0, min(1.0, f))
+        col = int(round(f * (aw - 1)))
+        r = 2 - int(round(math.sin(math.pi * f) * 2))
+        self.put(pad, y + r, x0 + col, marker, mattr)
+        self.put(pad, y + 2, 2, "☀ " + sr.strftime("%H:%M"), self.c("sun", bold=True))
+        self.put(pad, y + 2, x0 + aw + 2, ss.strftime("%H:%M") + " ☾", self.c("moon", bold=True))
+        self.put(pad, y + 3, 2, info, self.c("text"), maxw=W - 4)
+        name, icon, illum, to_full, to_new = moon_info(datetime.now(timezone.utc))
+        nxt = "luna llena en %.0f días" % to_full if to_full < to_new else "luna nueva en %.0f días" % to_new
+        if to_full < 0.5 or to_new < 0.5:
+            nxt = "hoy"
+        self.put(pad, y + 4, 2, "%s %s  ·  %.0f%% iluminada  ·  %s" % (icon, name, illum, nxt), self.c("moon"), maxw=W - 4)
+        return y + 6
+
+    # --- PRÓXIMAS HORAS
+    def draw_hourly(self, pad, y, W, m):
+        ncol = self.ncol(W)
+        start = self.hour_start(m, ncol)
+        idx = list(range(start, start + ncol))
+        t0 = m.htimes[start]
+        right = "%s %d %s · desde %s  ←→" % (DAYS[t0.weekday()], t0.day, MONTHS[t0.month - 1], t0.strftime("%H:%M"))
+        y = self.section(pad, y, W, "PRÓXIMAS HORAS", right)
+        temps = [m.h["temperature_2m"][i] for i in idx]
+        valid = [t for t in temps if t is not None]
+        lo, hi = (min(valid), max(valid)) if valid else (0, 1)
+        span = max(hi - lo, 1.0)
+        now_i = m.now_idx()
+        for k, i in enumerate(idx):
+            x = 2 + k * 4
+            t = temps[k]
+            if t is None:
+                continue
+            self.put(pad, y, x, ("%.0f°" % m.temp(t)).center(4), self.ct(t, bold=(i == now_i)))
+            eighths = 4 + int(round((t - lo) / span * 36))
+            battr = self.ct(t)
+            for r in range(5):
+                e = eighths - r * 8
+                chp = "█" if e >= 8 else (" " if e <= 0 else "▁▂▃▄▅▆▇"[e - 1])
+                self.put(pad, y + 5 - r, x + 1, chp * 2, battr)
+            tt = m.htimes[i]
+            lab = DAYS[tt.weekday()] if tt.hour == 0 else tt.strftime("%H")
+            if i == now_i:
+                lattr = self.c("title", bold=True, rev=True)
+            elif tt.hour == 0:
+                lattr = self.c("accent", bold=True)
+            else:
+                lattr = self.c("dim")
+            self.put(pad, y + 6, x, lab.center(4), lattr)
+            ic, iattr = self.icon(m.h["weather_code"][i], (m.h["is_day"][i] or 0) == 1)
+            self.put(pad, y + 7, x + 1, ic, iattr)
+            pp = m.h["precipitation_probability"][i] or 0
+            if pp >= 60:
+                pattr = self.c("rain", bold=True)
+            elif pp >= 30:
+                pattr = self.c("rain")
+            elif pp > 0:
+                pattr = self.c("rain", dim=True)
+            else:
+                pattr = self.c("dim")
+            self.put(pad, y + 8, x, ("%d%%" % pp if pp else "·").center(4), pattr)
+        return y + 10
+
+    # --- 7 DÍAS
+    def draw_daily(self, pad, y, W, m):
+        y = self.section(pad, y, W, "7 DÍAS", "Tab / 1-7 elegir día")
+        tmins = [v for v in m.d["temperature_2m_min"] if v is not None]
+        tmaxs = [v for v in m.d["temperature_2m_max"] if v is not None]
+        gmin, gmax = (min(tmins), max(tmaxs)) if tmins and tmaxs else (0, 1)
+        descw = 22 if W >= 100 else 16
+        fixed = 2 + 8 + 2 + descw + 1 + 5 + 1 + 5 + 7 + 6 + 8
+        bw = W - 4 - fixed
+        if bw < 8:
+            descw = max(10, descw - (8 - bw))
+            bw = 8
+        bw = min(bw, 28)
+        sel = m.day_of_hour(self.hour_start(m, self.ncol(W)))
+        text, dim = self.c("text"), self.c("dim")
+        for d in range(m.nd):
+            row = y + d
+            dt = m.dtimes[d]
+            is_sel = d == sel
+            x = 2
+            self.put(pad, row, x, "▸" if is_sel else " ", self.c("accent", bold=True))
+            x += 2
+            label = "hoy" if d == 0 else DAYS[dt.weekday()]
+            self.put(pad, row, x, "%s %2d" % (label, dt.day), self.c("title", bold=True) if is_sel else text)
+            x += 8
+            code = m.d["weather_code"][d]
+            ic, iattr = self.icon(code, True)
+            self.put(pad, row, x, ic, iattr)
+            x += 2
+            self.put(pad, row, x, wmo(code)[0][:descw], text if is_sel else dim)
+            x += descw + 1
+            tmin, tmax = m.d["temperature_2m_min"][d], m.d["temperature_2m_max"][d]
+            self.put(pad, row, x, m.tfmt(tmin).rjust(4), self.ct(tmin, bold=is_sel))
+            x += 5
+            if tmin is not None and tmax is not None:
+                span = max(gmax - gmin, 0.1)
+                a = int(round((tmin - gmin) / span * (bw - 1)))
+                b = int(round((tmax - gmin) / span * (bw - 1)))
+                for i in range(bw):
+                    if a <= i <= b:
+                        self.put(pad, row, x + i, "━", self.ct(gmin + i / float(bw - 1) * span))
+                    else:
+                        self.put(pad, row, x + i, "╌", dim)
+            x += bw + 1
+            self.put(pad, row, x, m.tfmt(tmax).ljust(4), self.ct(tmax, bold=is_sel))
+            x += 5
+            pp = m.d["precipitation_probability_max"][d] or 0
+            pattr = self.c("rain", bold=True) if pp >= 60 else (self.c("rain") if pp >= 30 else dim)
+            self.put(pad, row, x, "☂%3d%%" % pp, pattr)
+            x += 7
+            uv = m.d["uv_index_max"][d] or 0
+            self.put(pad, row, x, "UV%2.0f" % uv, self.c(uv_level(uv)[1]))
+            x += 6
+            wsm = m.d["wind_speed_10m_max"][d] or 0
+            wattr = self.c("warn") if wsm >= 40 else dim
+            wtxt = "≋%3.0f %s" % (m.wind(wsm), m.wunit()) if W >= 100 else "≋%3.0f" % m.wind(wsm)
+            self.put(pad, row, x, wtxt, wattr, maxw=W - 2 - x)
+        return y + m.nd + 1
+
+    # --- CONSEJO
+    def draw_tips(self, pad, y, W, m):
+        y = self.section(pad, y, W, "CONSEJO")
+        tips = m.tips()
+        for i, tip in enumerate(tips):
+            self.put(pad, y + i, 2, "» " + tip, self.c("warn" if i == 0 else "text"), maxw=W - 4)
+        return y + len(tips) + 1
+
+    # --- popups
+    def popup_win(self, h, w):
+        H, W = self.stdscr.getmaxyx()
+        w, h = min(w, W - 2), min(h, H - 2)
+        win = curses.newwin(h, w, max(0, (H - h) // 2), max(0, (W - w) // 2))
+        win.keypad(True)
+        win.timeout(-1)
+        return win, h, w
+
+    def box(self, win):
+        h, w = win.getmaxyx()
+        attr = self.c("accent")
+        self.put(win, 0, 0, "┌" + "─" * (w - 2) + "┐", attr)
+        for r in range(1, h - 1):
+            self.put(win, r, 0, "│", attr)
+            self.put(win, r, w - 1, "│", attr)
+        self.put(win, h - 1, 0, "└" + "─" * (w - 2), attr)
+        self.put(win, h - 1, w - 1, "┘", attr)
+
+    def popup_input(self, title, prompt, initial="", hint="Enter aceptar · Esc cancelar", width=60):
+        win, h, w = self.popup_win(6, width)
+        buf = initial
+        try:
+            curses.curs_set(1)
+        except curses.error:
+            pass
+        try:
+            while True:
+                win.erase()
+                self.box(win)
+                self.put(win, 0, 2, " %s " % title, self.c("accent", bold=True))
+                self.put(win, 1, 2, prompt, self.c("title", bold=True), maxw=w - 4)
+                self.put(win, 2, 2, "› " + buf, self.c("text"), maxw=w - 4)
+                self.put(win, 4, 2, hint, self.c("dim"), maxw=w - 4)
+                try:
+                    win.move(2, min(w - 3, 4 + len(buf)))
+                except curses.error:
+                    pass
+                win.refresh()
+                ch = win.get_wch()
+                if ch in ("\n", "\r") or ch == curses.KEY_ENTER:
+                    return buf.strip()
+                if ch == "\x1b":
+                    return None
+                if ch in (curses.KEY_BACKSPACE, "\x7f", "\x08"):
+                    buf = buf[:-1]
+                elif ch == curses.KEY_RESIZE:
+                    continue
+                elif isinstance(ch, str) and ch.isprintable():
+                    buf += ch
+        finally:
+            try:
+                curses.curs_set(0)
+            except curses.error:
+                pass
+
+    def popup_choose(self, title, options):
+        win, h, w = self.popup_win(len(options) + 4, 78)
+        sel = 0
+        while True:
+            win.erase()
+            self.box(win)
+            self.put(win, 0, 2, " %s " % title, self.c("accent", bold=True))
+            for i, opt in enumerate(options[:h - 4]):
+                attr = self.c("title", bold=True, rev=True) if i == sel else self.c("text")
+                self.put(win, 1 + i, 2, (" " + opt).ljust(w - 4), attr, maxw=w - 4)
+            self.put(win, h - 2, 2, "↑↓ elegir · Enter aceptar · Esc cancelar", self.c("dim"))
+            win.refresh()
+            ch = win.get_wch()
+            if ch in ("\n", "\r") or ch == curses.KEY_ENTER:
+                return sel
+            if ch in ("\x1b", "q"):
+                return None
+            if ch in (curses.KEY_DOWN, "j"):
+                sel = (sel + 1) % len(options)
+            elif ch in (curses.KEY_UP, "k"):
+                sel = (sel - 1) % len(options)
+
+    def popup_msg(self, lines):
+        win, h, w = self.popup_win(len(lines) + 4, max(40, max(len(l) for l in lines) + 4))
+        win.erase()
+        self.box(win)
+        for i, line in enumerate(lines):
+            self.put(win, 1 + i, 2, line, self.c("text"), maxw=w - 4)
+        self.put(win, h - 2, 2, "cualquier tecla para seguir", self.c("dim"))
+        win.refresh()
+        win.get_wch()
+
+    def popup_help(self):
+        lines = [
+            "q           salir               r       refrescar datos",
+            "c  /        cambiar ciudad      u       °C / °F",
+            "a           animación on/off    t       volver a ahora",
+            "← → h l     desplazar horas     Tab     día siguiente (Shift+Tab anterior)",
+            "1-7         ir a ese día        ↑ ↓ j k scroll",
+            "PgUp/PgDn   scroll por página   g / G   arriba / abajo",
+            "",
+            "Datos: Open-Meteo · caché %d min en %s" % (self.ttl // 60, CACHE_DIR),
+            "tiempo --bar  →  una línea para la barra de dwm",
+        ]
+        self.popup_msg(lines)
+
+    def change_city(self):
+        q = self.popup_input("Ciudad", "Buscar ciudad")
+        if q:
+            self.pick_city(q)
+
+    def startup_prompt(self):
+        """Sin ciudad por parámetro: preguntar. Enter vacío o Esc = la última usada."""
+        last = load_json(cache_path("last.json"))
+        default = last["name"] if last and last.get("name") else DEFAULT_CITY
+        while True:
+            self.render()
+            q = self.popup_input("☀ TIEMPO", "¿De dónde querés el tiempo?",
+                                 hint="Escribí una ciudad (o lat,lon)  ·  Enter vacío o Esc = %s" % default, width=70)
+            if not q:
+                if last and "lat" in last:
+                    self.start_fetch(geo=last)
+                else:
+                    self.start_fetch(query=DEFAULT_CITY)
+                return
+            if self.pick_city(q):
+                return
+
+    def pick_city(self, q):
+        """Geocodifica, deja elegir si hay varias y arranca la carga. True si arrancó."""
+        geo = coords_geo(q)
+        if geo:
+            self.start_fetch(geo=geo)
+            return True
+        self.flash_msg("Buscando «%s»…" % q, 10)
+        self.render()
+        try:
+            results = search_city(q)
+        except Exception as e:
+            self.msg = None
+            self.popup_msg(["No pude buscar la ciudad:", "%s" % e])
+            return False
+        self.msg = None
+        if not results:
+            self.popup_msg(["No encontré «%s»." % q, "Probá con el nombre en español o inglés, o lat,lon."])
+            return False
+        if len(results) == 1 or dominant(results):
+            geo = results[0]
+        else:
+            results = results[:12]
+            k = self.popup_choose("¿Cuál?", [geo_label(r) for r in results])
+            if k is None:
+                return False
+            geo = results[k]
+        self.start_fetch(geo=geo)
+        return True
+
+
+# ---------------------------------------------------------------- modos
+
+def tui_geometry(cols=110, rows=45):
+    """Geometría X para st: centrada bajo la barra en el monitor donde está el mouse ('' si no se puede)."""
+    try:
+        out = subprocess.run(["xdotool", "getmouselocation", "--shell"], capture_output=True, text=True, timeout=2).stdout
+        mx = int(re.search(r"^X=(\d+)", out, re.M).group(1))
+        mons = subprocess.run(["xrandr", "--listactivemonitors"], capture_output=True, text=True, timeout=2).stdout
+        for mm in re.finditer(r"(\d+)/\d+x(\d+)/\d+\+(\d+)\+(\d+)", mons):
+            w, h, x, y = map(int, mm.groups())
+            if x <= mx < x + w:
+                return "%dx%d+%d+%d" % (cols, rows, x + max(0, (w - (cols * 9 + 40)) // 2), y + 40)
+    except Exception:
+        pass
+    return ""
+
+
+def open_tui(query):
+    """Click izquierdo en el widget: abre la TUI en una terminal nueva (st: flotante por regla de dwm)."""
+    term = os.environ.get("TERMINAL") or "st"
+    cmd = [term]
+    if os.path.basename(term) == "st":
+        geom = tui_geometry()
+        cmd += ["-t", "tiempo"] + (["-g", geom] if geom else [])
+    cmd += ["-e", os.path.abspath(sys.argv[0])] + ([query] if query else [])
+    subprocess.Popen(cmd, start_new_session=True, stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def notify_forecast(m):
+    """Click derecho en el widget: notificación con el resumen."""
+    desc, kind = wmo(m.cur["weather_code"])
+    kind = art_kind(kind, m.cur.get("is_day", 1) == 1)
+    lines = ["%s %s %s · sensación %s" % (ICON[kind], m.tfmt(m.cur["temperature_2m"]), desc,
+                                          m.tfmt(m.cur["apparent_temperature"]))]
+    ro = m.rain_outlook()
+    if ro:
+        state, a, b, _ = ro
+        at = lambda mn: (m.now() + timedelta(minutes=mn)).strftime("%H:%M")
+        if state == "now":
+            lines.append("☂ Llueve ahora" + (", para a las %s" % at(b) if b is not None else ""))
+        elif state == "soon":
+            lines.append("☂ Se larga en %s (%s)" % (fmt_min(a), at(a)))
+        else:
+            lines.append("☂ Sin lluvia en 12 h")
+    tmin, tmax = m.d["temperature_2m_min"][0], m.d["temperature_2m_max"][0]
+    lines.append("Hoy ↓ %s ↑ %s · UV máx %.0f" % (m.tfmt(tmin), m.tfmt(tmax), m.d["uv_index_max"][0] or 0))
+    sc, when, txt = m.asado()
+    lines.append("Asado %s %d/10 · %s" % (when, sc, txt))
+    dry, q, _ = m.tender()
+    lines.append("Tender: %s · %s" % ("24h+ secas" if dry >= 24 else "%d h secas" % dry, q))
+    tips = m.tips()
+    if tips:
+        lines.append("» " + tips[0])
+    subprocess.run(["notify-send", "-a", "tiempo", "-t", "15000", "Tiempo · %s" % m.geo["name"], "\n".join(lines)], timeout=5)
+
+
+def bar_mode(query, units, ttl, widget=False):
+    # dwmblocks (parche statuscmd) corre el bloque con BUTTON/BLOCK_BUTTON=1/2/3 al hacer click
+    btn = (os.environ.get("BLOCK_BUTTON") or os.environ.get("BUTTON") or "").strip() if widget else ""
+    if btn == "1":
+        try:
+            open_tui(query)
+        except Exception as e:
+            print("tiempo: no pude abrir la TUI: %s" % e, file=sys.stderr)
+    try:
+        geo = resolve_city(query)
+        data = load_weather(geo, force=(btn == "2"), ttl=ttl, timeout=6)
+    except Exception:
+        print("" if widget else "tiempo: sin datos")
+        return 1
+    m = Model(data, units)
+    if btn == "3":
+        try:
+            notify_forecast(m)
+        except Exception as e:
+            print("tiempo: no pude notificar: %s" % e, file=sys.stderr)
+    desc, kind = wmo(m.cur["weather_code"])
+    kind = art_kind(kind, m.cur.get("is_day", 1) == 1)
+    rain = ""
+    ro = m.rain_outlook()
+    if ro:
+        state, a, b, _ = ro
+        if state == "now":
+            rain = " ☂ llueve" + (" hasta %s" % (m.now() + timedelta(minutes=b)).strftime("%H:%M") if b is not None else "")
+        elif state == "soon" and a <= 120:
+            rain = " ☂ en %s" % fmt_min(a)
+    temp = m.tfmt(m.cur["temperature_2m"])
+    if widget:
+        print("%s %s%s" % (ICON[kind], temp, rain))
+    else:
+        print("%s %s %s%s · %s" % (ICON[kind], temp, desc, rain, m.geo["name"]))
+    return 0
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="tiempo", description="El clima en la terminal, pero zarpado.",
+                                 formatter_class=argparse.RawDescriptionHelpFormatter,
+                                 epilog=__doc__.split("Uso:", 1)[1])
+    ap.add_argument("ciudad", nargs="*", help="ciudad a consultar (default: la última usada)")
+    ap.add_argument("--bar", action="store_true", help="una sola línea para la barra de estado")
+    ap.add_argument("--widget", action="store_true", help="lo mínimo para dwmblocks: icono, temperatura y aviso de lluvia")
+    ap.add_argument("--no-anim", action="store_true", help="sin animaciones")
+    ap.add_argument("-f", "--fahrenheit", action="store_true", help="temperaturas en °F")
+    ap.add_argument("--ttl", type=int, default=CACHE_TTL, help="segundos de caché (default %d)" % CACHE_TTL)
+    ap.add_argument("--demo", metavar="CODIGO[,noche]",
+                    help="forzar la condición actual (código WMO) para ver el arte: --demo 95 · --demo 0,noche")
+    ap.add_argument("-V", "--version", action="version", version="tiempo " + VERSION)
+    args = ap.parse_args()
+    query = " ".join(args.ciudad).strip() or None
+    locale.setlocale(locale.LC_ALL, "")
+    if args.bar or args.widget:
+        return bar_mode(query, "f" if args.fahrenheit else "c", args.ttl, widget=args.widget)
+    try:
+        curses.wrapper(lambda scr: App(scr, args).run())
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

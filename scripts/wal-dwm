@@ -1,47 +1,19 @@
 #!/bin/sh
+# aplica wal y actualiza recursos de dwm
 
-wal -c
-wal -n -s -t -e -i "$1" || exit 1
+wal -i "$1" || exit 1
 
-: "${FZF_DEFAULT_OPTS:=}"
-: "${LS_COLORS:=}"
-
+# carga variables de wal
 . "$HOME/.cache/wal/colors.sh" || exit 1
 
 cat > "$HOME/.cache/wal/dwm.Xresources" <<EOF
-dwm.normbgcolor:          $background
-dwm.normfgcolor:          $foreground
-dwm.normbordercolor:      $color8
-dwm.normfloatcolor:       $color8
-dwm.selbgcolor:           $color1
-dwm.selfgcolor:           $foreground
-dwm.selbordercolor:       $color1
-dwm.selfloatcolor:        $color1
-dwm.titlenormbgcolor:     $background
-dwm.titlenormfgcolor:     $foreground
-dwm.titlenormbordercolor: $color8
-dwm.titlenormfloatcolor:  $color8
-dwm.titleselbgcolor:      $color1
-dwm.titleselfgcolor:      $foreground
-dwm.titleselbordercolor:  $color1
-dwm.titleselfloatcolor:   $color1
-dwm.tagsnormbgcolor:      $background
-dwm.tagsnormfgcolor:      $foreground
-dwm.tagsnormbordercolor:  $color8
-dwm.tagsnormfloatcolor:   $color8
-dwm.tagsselbgcolor:       $color1
-dwm.tagsselfgcolor:       $foreground
-dwm.tagsselbordercolor:   $color1
-dwm.tagsselfloatcolor:    $color1
-dwm.hidnormbgcolor:       $background
-dwm.hidnormfgcolor:       $color8
-dwm.hidselbgcolor:        $background
-dwm.hidselfgcolor:        $color1
-dwm.urgbgcolor:           $background
-dwm.urgfgcolor:           $color3
+dwm.normbgcolor:     $background
+dwm.normfgcolor:     $foreground
+dwm.normbordercolor: $color8
+dwm.selbgcolor:      $color1
+dwm.selfgcolor:      $foreground
+dwm.selbordercolor:  $color1
 EOF
 
 xrdb -merge "$HOME/.cache/wal/colors.Xresources"
 xrdb -merge "$HOME/.cache/wal/dwm.Xresources"
-
-xdotool key super+F5

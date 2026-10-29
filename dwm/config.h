@@ -10,19 +10,19 @@ static const char *voldowncmd[] = { "sh", "-c", "pactl set-sink-volume @DEFAULT_
 static const char *mutecmd[]    = { "sh", "-c", "pactl set-sink-mute @DEFAULT_SINK@ toggle && pkill -RTMIN+10 dwmblocks", NULL };
 
 /* espaciado */
-static int gappih  = 6;
-static int gappiv  = 6;
+static int gappih  = 4;
+static int gappiv  = 4;
 static int gappoh  = 8;
 static int gappov  = 8;
 static int smartgaps = 1;
 
 /* apariencia */
-static unsigned int borderpx   = 2;   /* borde en píxeles de las ventanas */
+static unsigned int borderpx   = 1;   /* borde en píxeles de las ventanas */
 static unsigned int snap       = 32;  /* snap en píxeles */
 static int showbar             = 1;   /* 0 oculta la barra */
 static int topbar              = 1;   /* 0 pone la barra abajo */
 static int swallowfloating     = 0;
-static const char *fonts[]     = { "JetBrains Mono:size=11", "JoyPixels:pixelsize=11:antialias=true:autohint=true" };
+static const char *fonts[]     = { "JetBrains Mono:size=11", "Font Awesome 6 Free:style=Solid:pixelsize=11", "Font Awesome 6 Brands:pixelsize=11", "Noto Color Emoji:pixelsize=11" };
 static const char dmenufont[]  = "JetBrains Mono:size=11";
 static char normbgcolor[]      = "#1a0000";
 static char normbordercolor[]  = "#330000";
@@ -58,6 +58,8 @@ static const Rule rules[] = {
 	{ "St",               NULL,     NULL,           0,         0,          1,          0,         -1 },
 	{ NULL,               NULL,     "Event Tester", 0,         0,          0,          1,         -1 }, /* xev */
 	{ NULL,               NULL,     "calendar",     0,         1,          0,          1,         -1 }, /* popup calendario */
+	{ NULL,               NULL,     "tiempo",       0,         1,          0,          1,         -1 }, /* TUI del clima (click en la barra) */
+	{ NULL,               NULL,     "volume-popup", 0,         1,          0,          1,         -1 }, /* popup de volumen (click en la barra) */
 };
 
 /* distribuciones */
@@ -72,6 +74,8 @@ static const Layout layouts[] = {
 	{ "[]=",    tile },    /* primera entrada es la predeterminada */
 	{ "><>",    NULL },    /* sin función = comportamiento flotante */
 	{ "[M]",    monocle },
+	{ "[\\]",    dwindle },        /* fibonacci dwindle (el layout por defecto de Hyprland) */
+	{ "|M|",    centeredmaster }, /* master al centro */
 };
 
 /* definición de teclas */
@@ -85,9 +89,11 @@ static const Layout layouts[] = {
 /* macro para ejecutar comandos de shell (estilo pre dwm-5.0) */
 #define SHCMD(cmd) { .v = (const char*[]){ "/bin/sh", "-c", cmd, NULL } }
 
+#define STATUSBAR "dwmblocks" /* statuscmd: a quién mandarle los clicks del status */
+
 /* comandos */
 static char dmenumon[2]            = "0"; /* monitor para dmenu, modificado en spawn() */
-static const char *dmenucmd[]      = { "/bin/sh", "-c", "$HOME/scripts/dmenu.sh", NULL };
+static const char *dmenucmd[]      = { "/home/r/scripts/dmenu.sh", NULL }; /* dmenu propio del usuario; rofi-launch existe pero sin tecla (2026-10-27) */
 static const char *flamecmd[]      = { "flameshot", "gui", NULL };
 static const char *lockcmd[]       = { "lock", NULL };
 static const char *termcmd[]       = { "/bin/sh", "-c", "st", NULL };
@@ -105,6 +111,9 @@ static Key keys[] = {
     { MODKEY,                       XK_l,      setmfact,       {.f = +0.05} },
     { MODKEY|ShiftMask,             XK_j,      movestack,      {.i = +1 } },
     { MODKEY|ShiftMask,             XK_k,      movestack,      {.i = -1 } },
+    { MODKEY|ControlMask,           XK_k,      setcfact,       {.f = +0.05} },
+    { MODKEY|ControlMask,           XK_j,      setcfact,       {.f = -0.05} },
+    { MODKEY|ControlMask,           XK_o,      setcfact,       {.f =  0.00} },
     { MODKEY,                       XK_s,      incnmaster,     {.i = +1 } },
     { MODKEY,                       XK_d,      incnmaster,     {.i = -1 } },
     { MODKEY,                       XK_g,      togglebar,      {0} },
@@ -129,6 +138,18 @@ static Key keys[] = {
     { MODKEY|ShiftMask,             XK_equal,  setgapswrapper, {.i = 0  } },
     { MODKEY,                       XK_apostrophe, togglescratch, {.v = scratchpadcmd } },
     { MODKEY,                       XK_F5,     reload_xresources, {.v = NULL } },
+    /* fase 2 efectos (2026-10-27): combos que estaban libres */
+    { MODKEY,                       XK_x,      spawn,          SHCMD("rofi-power") },
+    { MODKEY,                       XK_p,      spawn,          SHCMD("rofi-quick") },
+    { MODKEY,                       XK_n,      spawn,          SHCMD("dunstctl history-pop") },
+    { MODKEY|ShiftMask,             XK_n,      spawn,          SHCMD("dunstctl set-paused toggle") },
+    { MODKEY,                       XK_v,      spawn,          SHCMD("clip-pick") },
+    { MODKEY|ShiftMask,             XK_w,      spawn,          SHCMD("rofi-wall") },
+    { MODKEY|ShiftMask,             XK_t,      spawn,          SHCMD("rofi-theme") },
+    { MODKEY,                       XK_z,      spawn,          SHCMD("zoom") },
+    { MODKEY,                       XK_y,      setlayout,      {.v = &layouts[3]} },
+    { MODKEY,                       XK_i,      setlayout,      {.v = &layouts[4]} },
+    { MODKEY|ShiftMask,             XK_c,      centerfloat,    {0} },
     { MODKEY|ShiftMask,             XK_q,      quit,           {0} },
     { MODKEY|ControlMask,           XK_q,      quit,           {.i = 1} }, /* reiniciar */
     TAGKEYS(                        XK_1,                      0)
@@ -152,8 +173,12 @@ static Button buttons[] = {
     { ClkLtSymbol,          0,              Button1,        setlayout,      {0} },
     { ClkLtSymbol,          0,              Button3,        setlayout,      {.v = &layouts[2]} },
     { ClkWinTitle,          0,              Button2,        zoom,           {0} },
-    { ClkStatusText,        0,              Button1,        spawn,          SHCMD("$HOME/.local/bin/calendar-popup") },
-    { ClkStatusText,        0,              Button2,        spawn,          {.v = termcmd } },
+    /* statuscmd: el click va al bloque de dwmblocks que está abajo del puntero (BLOCK_BUTTON=1/2/3) */
+    { ClkStatusText,        0,              Button1,        sigstatusbar,   {.i = 1} },
+    { ClkStatusText,        0,              Button2,        sigstatusbar,   {.i = 2} },
+    { ClkStatusText,        0,              Button3,        sigstatusbar,   {.i = 3} },
+    { ClkStatusText,        0,              Button4,        sigstatusbar,   {.i = 4} }, /* rueda arriba */
+    { ClkStatusText,        0,              Button5,        sigstatusbar,   {.i = 5} }, /* rueda abajo */
     { ClkClientWin,         MODKEY,         Button1,        movemouse,      {0} },
     { ClkClientWin,         MODKEY,         Button2,        togglefloating, {0} },
     { ClkClientWin,         MODKEY,         Button3,        resizemouse,    {0} },

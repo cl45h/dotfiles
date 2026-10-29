@@ -1,0 +1,74 @@
+window {
+    background-color: #1e1e2e;
+    border-radius: 18px;
+    border: 1px solid #313244;
+}
+
+/* yad deja ~4 px fijos arriba de la fila; con --borders=0 y este padding queda simétrico */
+window > box {
+    padding: 0 5px 5px 4px;
+}
+
+label {
+    color: #cdd6f4;
+}
+
+scale {
+    margin: 0 4px;
+    padding: 0;
+}
+
+scale trough {
+    background-color: #313244;
+    border: none;
+    min-height: 5px;
+    border-radius: 3px;
+}
+
+scale highlight {
+    background-color: #89b4fa;
+    border-radius: 3px;
+}
+
+scale slider {
+    background-color: #cdd6f4;
+    border: 1px solid #89b4fa;
+    min-width: 14px;
+    min-height: 14px;
+    border-radius: 7px;
+    margin: -6px;
+    box-shadow: none;
+}
+
+button {
+    background-color: #181825;
+    color: #89b4fa;
+    border: 1px solid #313244;
+    border-radius: 12px;
+    min-width: 24px;
+    min-height: 24px;
+    padding: 0;
+    margin: 0;
+    box-shadow: none;
+    text-shadow: none;
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: 12px 12px;
+}
+
+/* los +/- de yad son texto y quedan descentrados: los tapo y dibujo el ícono simbólico centrado */
+button label {
+    opacity: 0;
+}
+
+box > button:first-child {
+    background-image: url('/home/r/.config/yad/vol-minus.svg');
+}
+
+box > button:last-child {
+    background-image: url('/home/r/.config/yad/vol-plus.svg');
+}
+
+button:hover {
+    background-color: #313244;
+}

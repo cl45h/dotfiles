@@ -1,0 +1,24 @@
+#!/usr/bin/env python3
+"""clip-pick: historial del portapapeles con rofi. Elegís una entrada y vuelve al CLIPBOARD (xclip)."""
+import json
+import os
+import subprocess
+import sys
+
+HIST = os.path.expanduser("~/.cache/clip-history.json")
+try:
+    with open(HIST) as f:
+        hist = json.load(f)
+except (OSError, ValueError):
+    hist = []
+if not hist:
+    subprocess.run(["notify-send", "-t", "3000", "Portapapeles", "Historial vacío (¿corre clip-daemon?)"])
+    sys.exit(0)
+lines = [" ".join(t.split())[:110] for t in hist]
+p = subprocess.run(["rofi", "-dmenu", "-i", "-p", "portapapeles", "-format", "i",
+                    "-theme-str", "window { width: 760px; } listview { lines: 12; }"],
+                   input="\n".join(lines), capture_output=True, text=True)
+if p.returncode != 0 or not p.stdout.strip():
+    sys.exit(0)
+text = hist[int(p.stdout.strip())]
+subprocess.run(["xclip", "-selection", "clipboard"], input=text, text=True)

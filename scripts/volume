@@ -4,8 +4,26 @@
 ICON_ON=''
 ICON_MUTED=''
 
+getvol() {
+    pactl get-sink-volume @DEFAULT_SINK@ | sed -e 's,.* \([0-9][0-9]*\)%.*,\1,' | head -n 1
+}
+
+# Clicks desde la barra (dwmblocks statuscmd)
+case $BLOCK_BUTTON in
+    1) setsid -f "$HOME/.local/bin/volume-popup" >/dev/null 2>&1 ;;              # popup con slider
+    2) pactl set-sink-mute @DEFAULT_SINK@ toggle ;;                               # mute
+    3) if pgrep -x pavucontrol >/dev/null; then                                    # pavucontrol (toggle)
+           pkill -x pavucontrol
+       else
+           setsid -f pavucontrol-dark >/dev/null 2>&1
+       fi ;;
+    4) v=$(( $(getvol) + 5 )); [ "$v" -gt 100 ] && v=100                           # rueda arriba (+5, tope 100)
+       pactl set-sink-volume @DEFAULT_SINK@ "${v}%" ;;
+    5) pactl set-sink-volume @DEFAULT_SINK@ -5% ;;                                 # rueda abajo
+esac
+
 curStatus=$(pactl get-sink-mute @DEFAULT_SINK@)
-volume=$(pactl get-sink-volume @DEFAULT_SINK@ | sed -e 's,.* \([0-9][0-9]*\)%.*,\1,' | head -n 1)
+volume=$(getvol)
 
 if [ "${curStatus}" = 'Mute: yes' ]; then
     printf "${ICON_MUTED}^c${color8}^  ${volume}%%^d^"

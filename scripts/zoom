@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""zoom: lupa de pantalla con la rueda (lo más parecido en X11 al zoom del cursor de Hyprland).
+
+Captura el monitor donde está el puntero y lo muestra a pantalla completa:
+  rueda arriba/abajo = acercar/alejar sobre el punto del puntero (1x a 8x)
+  arrastrar con el botón izquierdo = mover la vista
+  Escape, q o clic derecho = cerrar
+Es una captura fija (no video en vivo); para ver algo en movimiento hay que volver a abrirlo.
+"""
+import cairo
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, Gtk  # noqa: E402
+
+
+class Zoom(Gtk.Window):
+    def __init__(self):
+        super().__init__(title="zoom")
+        disp = Gdk.Display.get_default()
+        _, px, py = disp.get_default_seat().get_pointer().get_position()
+        g = disp.get_monitor_at_point(px, py).get_geometry()
+        self.w, self.h = g.width, g.height
+        self.pix = Gdk.pixbuf_get_from_window(Gdk.get_default_root_window(), g.x, g.y, g.width, g.height)
+        self.scale, self.ox, self.oy, self.drag = 1.0, 0.0, 0.0, None
+        da = Gtk.DrawingArea()
+        da.add_events(Gdk.EventMask.SCROLL_MASK | Gdk.EventMask.BUTTON_PRESS_MASK
+                      | Gdk.EventMask.BUTTON_RELEASE_MASK | Gdk.EventMask.POINTER_MOTION_MASK)
+        da.connect("draw", self.draw)
+        da.connect("scroll-event", self.scroll)
+        da.connect("button-press-event", self.press)
+        da.connect("button-release-event", self.release)
+        da.connect("motion-notify-event", self.motion)
+        self.add(da)
+        self.connect("key-press-event", self.key)
+        self.connect("destroy", Gtk.main_quit)
+        self.set_decorated(False)
+        self.move(g.x, g.y)
+        self.set_default_size(g.width, g.height)
+        screen = self.get_screen()
+        self.fullscreen_on_monitor(screen, screen.get_monitor_at_point(px, py))
+
+    def clamp(self):
+        self.ox = min(0.0, max(self.w - self.w * self.scale, self.ox))
+        self.oy = min(0.0, max(self.h - self.h * self.scale, self.oy))
+
+    def draw(self, _w, cr):
+        cr.set_source_rgb(0, 0, 0)
+        cr.paint()
+        cr.translate(self.ox, self.oy)
+        cr.scale(self.scale, self.scale)
+        Gdk.cairo_set_source_pixbuf(cr, self.pix, 0, 0)
+        cr.get_source().set_filter(cairo.FILTER_NEAREST if self.scale >= 4 else cairo.FILTER_BILINEAR)
+        cr.paint()
+
+    def scroll(self, w, ev):
+        if ev.direction == Gdk.ScrollDirection.UP:
+            f = 1.25
+        elif ev.direction == Gdk.ScrollDirection.DOWN:
+            f = 1 / 1.25
+        else:
+            return
+        new = min(8.0, max(1.0, self.scale * f))
+        f = new / self.scale
+        self.ox = ev.x - (ev.x - self.ox) * f  # el punto bajo el puntero queda quieto
+        self.oy = ev.y - (ev.y - self.oy) * f
+        self.scale = new
+        self.clamp()
+        w.queue_draw()
+
+    def press(self, _w, ev):
+        if ev.button == 1:
+            self.drag = (ev.x - self.ox, ev.y - self.oy)
+        elif ev.button == 3:
+            self.destroy()
+
+    def release(self, _w, _ev):
+        self.drag = None
+
+    def motion(self, w, ev):
+        if self.drag:
+            self.ox, self.oy = ev.x - self.drag[0], ev.y - self.drag[1]
+            self.clamp()
+            w.queue_draw()
+
+    def key(self, _w, ev):
+        if ev.keyval in (Gdk.KEY_Escape, Gdk.KEY_q):
+            self.destroy()
+
+
+Zoom().show_all()
+Gtk.main()

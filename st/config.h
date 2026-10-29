@@ -17,7 +17,7 @@ static int borderpx = 15;
  * 4: valor de shell en /etc/passwd
  * 5: valor de shell en config.h
  */
-static char *shell = "/bin/sh";
+static char *shell = "/bin/zsh";
 char *utmp = NULL;
 /* programa scroll: para activar usar un string como "scroll" */
 char *scroll = NULL;

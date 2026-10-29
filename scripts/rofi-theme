@@ -1,0 +1,20 @@
+#!/bin/sh
+# Selector de temas de colores (rofi): los 27 presets de 43PR convertidos a wal
+# (~/.config/wal/colorschemes/{dark,light}/43pr-*.json) y "colores del fondo" para volver a la paleta
+# sacada del wallpaper. Aplica con wal --theme (no toca el wallpaper) y apply-colors.
+# El tema dura la sesión: al loguear, newlook vuelve a sacar los colores del fondo.
+D="$HOME/.config/wal/colorschemes"; LAST="$HOME/.cache/wal/last_wall"
+cur=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("wallpaper"))' "$HOME/.cache/wal/colors.json" 2>/dev/null)
+[ -n "$cur" ] && [ "$cur" != "None" ] && [ -f "$cur" ] && printf '%s\n' "$cur" > "$LAST"
+sel=$( { printf '%s\n' "  Colores del fondo de pantalla"
+         for f in "$D"/dark/43pr-*.json; do n=${f##*/43pr-}; printf '  %s\n' "${n%.json}"; done
+         for f in "$D"/light/43pr-*.json; do n=${f##*/43pr-}; printf '  %s (claro)\n' "${n%.json}"; done; } \
+      | rofi -dmenu -i -p "tema" -theme-str 'window { width: 380px; } listview { lines: 12; }')
+[ -z "$sel" ] && exit 0
+name=$(printf '%s' "$sel" | sed 's/^[^[:alnum:]]*//; s/ (claro)$//')
+case "$sel" in
+    *"Colores del fondo"*) w=$(cat "$LAST" 2>/dev/null); [ -f "$w" ] || { notify-send "Tema" "No sé cuál es el fondo actual"; exit 1; }; wal -c; wal -n -s -t -e -q -i "$w" ;;
+    *"(claro)") wal -n -s -t -e -q -l --theme "43pr-$name" ;;
+    *) wal -n -s -t -e -q --theme "43pr-$name" ;;
+esac
+apply-colors

@@ -1,0 +1,30 @@
+#!/bin/bash
+# Selector de fondos con miniaturas (rofi): elegís la imagen y después el monitor.
+# Miniaturas 480x270 en ~/.cache/wall-thumbs (se generan las que falten; la primera vez tarda).
+#   rofi-wall --gen   solo genera las miniaturas que faltan (para correr en background).
+# Cambia el fondo con wallfade (transición "outer" de 1 s) y, si incluye DP-0, regenera la paleta wal.
+WALL_DIR="$HOME/pix/wall"; THUMBS="$HOME/.cache/wall-thumbs"; mkdir -p "$THUMBS"
+mapfile -t list < <(find "$WALL_DIR" -maxdepth 1 -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' \) | sort -V)
+# Si la imagen no se puede leer (archivo roto, o enorme y magick se queda sin caché aun con el límite subido),
+# se deja una miniatura gris "sin vista previa" para no reintentar ni avisar en cada apertura.
+gen() { [ -f "$THUMBS/$2.png" ] && return
+    magick -limit area 4GiB -limit memory 2GiB "$1" -thumbnail '480x270^' -gravity center -extent 480x270 "$THUMBS/$2.png" 2>/dev/null \
+    || magick -size 480x270 xc:'#303030' -fill '#888888' -gravity center -pointsize 22 -annotate 0 'sin vista previa' "$THUMBS/$2.png" 2>/dev/null; }
+missing=0; for f in "${list[@]}"; do [ -f "$THUMBS/${f##*/}.png" ] || missing=$((missing + 1)); done
+if [ "$1" = "--gen" ]; then for f in "${list[@]}"; do gen "$f" "${f##*/}"; done; exit 0; fi
+[ "$missing" -gt 0 ] && notify-send -t 4000 "Fondos" "Generando $missing miniaturas, un momento…"
+for f in "${list[@]}"; do gen "$f" "${f##*/}"; done
+sel=$(for f in "${list[@]}"; do n=${f##*/}; printf '%s\0icon\x1f%s\n' "${n%.*}" "$THUMBS/$n.png"; done \
+    | rofi -dmenu -i -show-icons -p "fondo" -theme-str 'window { width: 1240px; } listview { columns: 4; lines: 3; spacing: 10px; } element { orientation: vertical; padding: 6px; } element-icon { size: 270px; } element-text { horizontal-align: 0.5; }')
+[ -z "$sel" ] && exit 0
+img=""; for f in "${list[@]}"; do n=${f##*/}; [ "${n%.*}" = "$sel" ] && { img=$f; break; }; done
+[ -f "$img" ] || exit 1
+mon=$(printf '%s\n' "Los dos monitores" "DP-0 (y colores)" "DP-2" | rofi -dmenu -i -p "monitor" -theme-str 'window { width: 300px; } listview { lines: 3; }')
+colors=0
+case "$mon" in
+    Los*)  wallfade -t outer -d 1 -- xwallpaper --output DP-0 --zoom "$img" --output DP-2 --zoom "$img"; colors=1 ;;
+    DP-0*) wallfade -t outer -d 1 -- xwallpaper --output DP-0 --zoom "$img"; colors=1 ;;
+    DP-2*) wallfade -t outer -d 1 -- xwallpaper --output DP-2 --zoom "$img" ;;
+    *) exit 0 ;;
+esac
+if [ "$colors" = 1 ]; then wal -c; wal -n -s -t -e -q -i "$img"; apply-colors; fi

@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""volume-osd: OSD de volumen (estilo Hyprland / 43PR) para dwm.
+
+Escucha `pactl subscribe` y, cuando cambia el volumen o el mute del sink por defecto,
+muestra una píldora abajo al centro del monitor donde está el puntero durante 1.5 s.
+No necesita teclas: cualquier cambio (teclas XF86, rueda en la barra, popup, pavucontrol)
+lo dispara. Si el popup de volumen (yad) está abierto no se muestra, para no duplicar.
+Colores: ~/.cache/wal/colors-osd.css (plantilla wal); si no existe, Catppuccin.
+Arranca desde .xinitrc. Una sola instancia (lock en ~/.cache/volume-osd.lock).
+"""
+import fcntl
+import os
+import re
+import subprocess
+import threading
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, GLib, Gtk  # noqa: E402
+
+CSS = os.path.expanduser("~/.cache/wal/colors-osd.css")
+LOCK = os.path.expanduser("~/.cache/volume-osd.lock")
+FALLBACK_CSS = b"""
+window { background-color: transparent; }
+.osd { background-color: alpha(#1e1e2e, 0.92); border: 1px solid #45475a; border-radius: 20px; padding: 10px 18px; }
+.osd label { color: #cdd6f4; font-family: "JetBrains Mono"; font-size: 11pt; }
+.osd image { color: #cdd6f4; }
+.osd.muted image, .osd.muted label { color: #6c7086; }
+levelbar trough { background-color: #313244; border: none; border-radius: 3px; min-height: 6px; }
+levelbar block { border-radius: 3px; min-height: 6px; border: none; }
+levelbar block.filled { background-color: #89b4fa; }
+.osd.muted levelbar block.filled { background-color: #6c7086; }
+levelbar block.empty { background-color: transparent; }
+"""
+
+
+def sink_state():
+    """(volumen %, muteado) del sink por defecto, o None si pulse no responde."""
+    try:
+        vol = subprocess.run(["pactl", "get-sink-volume", "@DEFAULT_SINK@"],
+                             capture_output=True, text=True, timeout=2).stdout
+        mute = subprocess.run(["pactl", "get-sink-mute", "@DEFAULT_SINK@"],
+                              capture_output=True, text=True, timeout=2).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"(\d+)%", vol)
+    if not m:
+        return None
+    return int(m.group(1)), "yes" in mute
+
+
+def popup_open():
+    return subprocess.run(["pgrep", "-f", "^yad .*--title=volume-popup"],
+                          capture_output=True).returncode == 0
+
+
+class OSD(Gtk.Window):
+    def __init__(self):
+        super().__init__(type=Gtk.WindowType.POPUP)  # override-redirect: dwm no la maneja
+        self.set_title("volume-osd")
+        self.set_wmclass("volume-osd", "volume-osd")
+        self.set_app_paintable(True)
+        self.set_keep_above(True)
+        self.set_type_hint(Gdk.WindowTypeHint.NOTIFICATION)
+        vis = self.get_screen().get_rgba_visual()
+        if vis:
+            self.set_visual(vis)
+        self.box = Gtk.Box(spacing=14)
+        self.box.get_style_context().add_class("osd")
+        self.icon = Gtk.Image()
+        self.icon.set_pixel_size(22)
+        self.bar = Gtk.LevelBar()
+        self.bar.set_min_value(0)
+        self.bar.set_max_value(100)
+        self.bar.set_size_request(200, 6)
+        self.bar.set_valign(Gtk.Align.CENTER)
+        for off in (Gtk.LEVEL_BAR_OFFSET_LOW, Gtk.LEVEL_BAR_OFFSET_HIGH, Gtk.LEVEL_BAR_OFFSET_FULL):
+            self.bar.remove_offset_value(off)  # un solo color, sin umbrales del tema
+        self.label = Gtk.Label()
+        self.label.set_width_chars(4)
+        self.label.set_xalign(1.0)
+        self.box.pack_start(self.icon, False, False, 0)
+        self.box.pack_start(self.bar, True, True, 0)
+        self.box.pack_start(self.label, False, False, 0)
+        self.add(self.box)
+        self.timer = None
+
+    def show_level(self, vol, muted):
+        if muted or vol == 0:
+            name = "audio-volume-muted-symbolic"
+        elif vol < 34:
+            name = "audio-volume-low-symbolic"
+        elif vol < 67:
+            name = "audio-volume-medium-symbolic"
+        else:
+            name = "audio-volume-high-symbolic"
+        self.icon.set_from_icon_name(name, Gtk.IconSize.LARGE_TOOLBAR)
+        self.bar.set_value(min(vol, 100))
+        self.label.set_text(f"{vol}%")
+        ctx = self.box.get_style_context()
+        if muted:
+            ctx.add_class("muted")
+        else:
+            ctx.remove_class("muted")
+        self.place()
+        self.show_all()
+        if self.timer:
+            GLib.source_remove(self.timer)
+        self.timer = GLib.timeout_add(1500, self.hide_osd)
+        return False
+
+    def place(self):
+        disp = Gdk.Display.get_default()
+        _, px, py = disp.get_default_seat().get_pointer().get_position()
+        g = disp.get_monitor_at_point(px, py).get_geometry()
+        _, nat = self.get_preferred_size()
+        self.move(g.x + (g.width - nat.width) // 2, g.y + g.height - nat.height - 48)
+
+    def hide_osd(self):
+        self.timer = None
+        self.hide()
+        return False
+
+
+def listen(osd):
+    last = sink_state()
+    proc = subprocess.Popen(["pactl", "subscribe"], stdout=subprocess.PIPE, text=True)
+    for line in proc.stdout:
+        if "on sink #" not in line and "on server" not in line:
+            continue
+        st = sink_state()
+        if st is None:
+            continue
+        if last is None:
+            last = st
+            continue
+        if st == last:
+            continue
+        last = st
+        if popup_open():
+            continue
+        GLib.idle_add(osd.show_level, *st)
+    # pactl murió (pulse reiniciado): salir y que .xinitrc/relanzar se encargue
+    GLib.idle_add(Gtk.main_quit)
+
+
+def main():
+    lock = open(LOCK, "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return 0  # ya hay una instancia
+    css = Gtk.CssProvider()
+    try:
+        css.load_from_path(CSS)
+    except GLib.Error:
+        css.load_from_data(FALLBACK_CSS)
+    Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), css,
+                                             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    osd = OSD()
+    threading.Thread(target=listen, args=(osd,), daemon=True).start()
+    Gtk.main()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,67 @@
+# dunst, look tipo 43PR (toasts redondeados arriba a la derecha, 1 px de borde,
+# 6 s normal / 20 s crítico). Colores: dunstrc.d/90-wal.conf (plantilla de wal).
+# Backup previo: dunstrc.bkp-efectos-20261027-1427
+[global]
+    monitor = 0
+    follow = none
+    width = 340
+    height = (0, 300)
+    origin = top-right
+    offset = (16, 50)
+    scale = 0
+    notification_limit = 5
+    progress_bar = true
+    progress_bar_height = 8
+    progress_bar_frame_width = 0
+    progress_bar_min_width = 150
+    progress_bar_max_width = 300
+    progress_bar_corner_radius = 4
+    indicate_hidden = yes
+    transparency = 0
+    separator_height = 1
+    padding = 12
+    horizontal_padding = 14
+    text_icon_padding = 12
+    frame_width = 1
+    gap_size = 8
+    corner_radius = 16
+    sort = yes
+    idle_threshold = 120
+    font = JetBrains Mono 11
+    line_height = 0
+    markup = full
+    format = "<b>%s</b>\n%b"
+    alignment = left
+    vertical_alignment = center
+    show_age_threshold = 60
+    ellipsize = middle
+    ignore_newline = no
+    stack_duplicates = true
+    hide_duplicate_count = false
+    show_indicators = no
+    enable_recursive_icon_lookup = true
+    icon_theme = Papirus-Dark, Adwaita
+    icon_position = left
+    min_icon_size = 32
+    max_icon_size = 48
+    sticky_history = yes
+    history_length = 100
+    always_run_script = true
+    title = Dunst
+    class = Dunst
+    ignore_dbusclose = false
+    force_xwayland = false
+    force_xinerama = false
+    mouse_left_click = do_action
+    mouse_middle_click = close_all
+    mouse_right_click = close_current
+
+[experimental]
+    per_monitor_dpi = false
+
+[urgency_low]
+    timeout = 6
+[urgency_normal]
+    timeout = 6
+[urgency_critical]
+    timeout = 20

@@ -1,0 +1,40 @@
+#!/bin/sh
+# Toggle yad calendar positioned at top-right of current monitor
+
+# If already open, close it
+if pgrep -f "^yad .*--title=calendar-popup" > /dev/null; then
+    pkill -f "^yad .*--title=calendar-popup"
+    exit 0
+fi
+
+# Get mouse X to determine which monitor
+# DP-0: x=0..1919   DP-2 (primary): x=1920..3839
+MOUSE_X=$(xdotool getmouselocation 2>/dev/null | grep -o 'x:[0-9]*' | cut -d: -f2)
+MOUSE_X=${MOUSE_X:-1920}
+
+if [ "$MOUSE_X" -lt 1920 ]; then
+    MON_RIGHT=1920
+else
+    MON_RIGHT=3840
+fi
+
+CAL_W=220
+X=$((MON_RIGHT - CAL_W - 2))
+Y=20
+
+yad --calendar \
+    --no-buttons \
+    --undecorated \
+    --css="$HOME/.config/yad/calendar.css" \
+    --title="calendar-popup" 2>/dev/null &
+
+# Wait for window to appear (up to 2s)
+WID=""
+i=0
+while [ -z "$WID" ] && [ "$i" -lt 20 ]; do
+    sleep 0.1
+    WID=$(xdotool search --name "calendar-popup" 2>/dev/null | tail -1)
+    i=$((i + 1))
+done
+
+[ -n "$WID" ] && xdotool windowmove "$WID" "$X" "$Y"
