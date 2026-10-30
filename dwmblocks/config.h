@@ -2,7 +2,7 @@
 static const Block blocks[] = {
 
 /*Icono*/	/*Comando*/		/*Intervalo de actualización*/	/*Señal de actualización*/
-  {"",  "/home/r/scripts/tiempo --widget 'Buenos Aires'",  600,  7},
+  {"",  "/home/cl45h/scripts/tiempo --widget 'Buenos Aires'",  600,  7},
   {"",  "volume",  0,  10},
   {"",  "clock",   1,  1},
   {" ",  "internet", 5, 4},

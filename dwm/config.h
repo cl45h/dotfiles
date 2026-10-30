@@ -93,7 +93,7 @@ static const Layout layouts[] = {
 
 /* comandos */
 static char dmenumon[2]            = "0"; /* monitor para dmenu, modificado en spawn() */
-static const char *dmenucmd[]      = { "/home/r/scripts/dmenu.sh", NULL }; /* dmenu propio del usuario; rofi-launch existe pero sin tecla (2026-10-27) */
+static const char *dmenucmd[]      = { "/home/cl45h/scripts/dmenu.sh", NULL }; /* dmenu propio del usuario; rofi-launch existe pero sin tecla (2026-10-27) */
 static const char *flamecmd[]      = { "flameshot", "gui", NULL };
 static const char *lockcmd[]       = { "lock", NULL };
 static const char *termcmd[]       = { "/bin/sh", "-c", "st", NULL };

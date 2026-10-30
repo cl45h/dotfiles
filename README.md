@@ -64,4 +64,4 @@ cc -O2 -o ~/.local/bin/wallfade wallfade/wallfade.c $(pkg-config --cflags --libs
 
 - Los atajos de teclado están en `dwm/config.h`. Los combos nuevos: Super+x energía, Super+p acciones rápidas, Super+Shift+w fondos, Super+Shift+t temas, Super+v portapapeles, Super+z zoom, Super+y dwindle, Super+i centeredmaster, Super+Shift+c flotante centrada.
 - Los colores de dunst entran por un drop-in que es un symlink al cache de wal (no está en el repo): `ln -s ~/.cache/wal/colors-dunst.conf ~/.config/dunst/dunstrc.d/90-wal.conf`. Los templates de `config/wal/templates` generan ese archivo y los de rofi y el OSD.
-- Las rutas están hardcodeadas a `/home/r`.
+- Algunas rutas absolutas apuntan a `/home/cl45h`; ajustá a tu `$HOME` si tu usuario es otro (están en `dwm/config.h`, `dwmblocks/config.h` y `config/yad/volume.css`).

@@ -62,11 +62,11 @@ button label {
 }
 
 box > button:first-child {
-    background-image: url('/home/r/.config/yad/vol-minus.svg');
+    background-image: url('/home/cl45h/.config/yad/vol-minus.svg');
 }
 
 box > button:last-child {
-    background-image: url('/home/r/.config/yad/vol-plus.svg');
+    background-image: url('/home/cl45h/.config/yad/vol-plus.svg');
 }
 
 button:hover {

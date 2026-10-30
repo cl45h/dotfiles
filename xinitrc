@@ -38,9 +38,9 @@ dunst &
 ~/.local/bin/volume-osd &   # OSD de volumen (fase 2 efectos, 2026-10-27)
 ~/.local/bin/clip-daemon &  # historial del portapapeles para super+v
 openrazer-daemon &
-##/home/r/.dwm/autostart.sh &
+##/home/cl45h/.dwm/autostart.sh &
 #exec Hyprland
-#/home/r/scripts/eww.sh &
+#/home/cl45h/scripts/eww.sh &
 exec dwm
 
 
@@ -48,6 +48,6 @@ exec dwm
 #/usr/bin/daemon -rB --pidfiles=~/.run --name=pipewire-pulse /usr/bin/pipewire-pulse &
 #/usr/bin/daemon -rB --pidfiles=~/.run --name=pipewire-media-session /usr/bin/pipewire-media-session &
 #wireplumber &
-#/home/r/scripts/wireplumber.sh &
+#/home/cl45h/scripts/wireplumber.sh &
 #exec sway
 #exec dwm
